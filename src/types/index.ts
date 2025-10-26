@@ -4,3 +4,4 @@ export * from './lessons';
 export * from './learning-materials';
 export * from './tests';
 export * from './sessions';
+export * from './profile';

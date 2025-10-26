@@ -6,3 +6,4 @@ export * from './learningMaterialService';
 export * from './lessonService';
 export * from './testService';
 export * from './sessionService';
+export * from './profileService';

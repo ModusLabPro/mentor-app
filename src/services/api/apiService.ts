@@ -2,17 +2,21 @@ import axios, { AxiosInstance, AxiosRequestConfig } from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
 
-// Для Android эмулятора используем 10.0.2.2 вместо localhost
-const getApiBaseUrl = () => {
+// Конфигурация API для разных окружений
+const getApiBaseUrl = (): string => {
+  // Проверяем переменную окружения
   if (process.env.API_BASE_URL) {
     return process.env.API_BASE_URL;
   }
   
-  if (Platform.OS === 'android') {
-    return 'http://10.0.2.2:4000/api';
+  // Для Android production используем реальный API
+  if (__DEV__) {
+    return Platform.OS === 'android' 
+      ? 'http://10.0.2.2:4000/api'
+      : 'http://localhost:4000/api';
+  } else {
+    return 'https://api.mentoringskill.com/api';
   }
-  
-  return 'http://localhost:4000/api';
 };
 
 const API_BASE_URL = getApiBaseUrl();

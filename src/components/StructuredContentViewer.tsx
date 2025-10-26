@@ -25,28 +25,44 @@ interface StructuredContentViewerProps {
 
 const { width: screenWidth } = Dimensions.get('window');
 
+// Функция для нормализации URL изображений
+const normalizeImageUrl = (url: string): string => {
+  if (!url) return '';
+  
+  // Если URL уже полный (начинается с http:// или https://)
+  if (url.startsWith('http://') || url.startsWith('https://')) {
+    return url;
+  }
+  
+  // Если URL относительный, добавляем базовый URL
+  const baseUrl = 'https://api.mentoringskill.com';
+  return `${baseUrl}${url.startsWith('/') ? url : '/' + url}`;
+};
+
 // Компонент для отображения изображений
 const MediaImage: React.FC<{ imageUrl: string; originalName?: string }> = ({ imageUrl, originalName }) => {
+  const normalizedUrl = normalizeImageUrl(imageUrl);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
 
   // Добавляем отладочную информацию
   React.useEffect(() => {
-    console.log('🖼️ MediaImage: Loading image with URL:', imageUrl);
-  }, [imageUrl]);
+    console.log('🖼️ MediaImage: Original URL:', imageUrl);
+    console.log('🖼️ MediaImage: Normalized URL:', normalizedUrl);
+  }, [imageUrl, normalizedUrl]);
 
   const handleImageError = (error: any) => {
-    console.error('🖼️ MediaImage: Failed to load image:', imageUrl, error);
+    console.error('🖼️ MediaImage: Failed to load image:', normalizedUrl, error);
     setError(true);
     setLoading(false);
   };
 
   const handleImageLoad = () => {
-    console.log('🖼️ MediaImage: Successfully loaded image:', imageUrl);
+    console.log('🖼️ MediaImage: Successfully loaded image:', normalizedUrl);
     setLoading(false);
   };
 
-  if (!imageUrl || imageUrl.trim() === '') {
+  if (!normalizedUrl || normalizedUrl.trim() === '') {
     return (
       <View style={styles.imageContainer}>
         <View style={styles.errorContainer}>
@@ -64,7 +80,7 @@ const MediaImage: React.FC<{ imageUrl: string; originalName?: string }> = ({ ima
           {originalName && (
             <Text style={styles.errorFileName}>Файл: {originalName}</Text>
           )}
-          <Text style={styles.errorUrl}>URL: {imageUrl}</Text>
+          <Text style={styles.errorUrl}>URL: {normalizedUrl}</Text>
           <TouchableOpacity 
             style={styles.retryButton}
             onPress={() => {
@@ -87,16 +103,13 @@ const MediaImage: React.FC<{ imageUrl: string; originalName?: string }> = ({ ima
         </View>
       )}
       <Image
-        source={{ uri: imageUrl }}
+        source={{ uri: normalizedUrl }}
         style={styles.image}
         resizeMode="contain"
         onError={handleImageError}
         onLoad={handleImageLoad}
-        onLoadStart={() => console.log('🖼️ MediaImage: Starting to load image:', imageUrl)}
-        onLoadEnd={() => console.log('🖼️ MediaImage: Load ended for image:', imageUrl)}
-        // Добавляем дополнительные свойства для лучшей совместимости
-        cache="force-cache"
-        fadeDuration={300}
+        onLoadStart={() => console.log('🖼️ MediaImage: Starting to load image:', normalizedUrl)}
+        onLoadEnd={() => console.log('🖼️ MediaImage: Load ended for image:', normalizedUrl)}
       />
       {originalName && (
         <Text style={styles.imageFileName}>{originalName}</Text>

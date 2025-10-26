@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -8,16 +8,59 @@ import {
   Alert,
   SafeAreaView,
   StatusBar,
+  ActivityIndicator,
 } from 'react-native';
 import { useAppDispatch, useAppSelector } from '../store/hooks';
 import { clearUser } from '../store/slices/userSlice';
 import { authService } from '../services/api/authService';
+import { profileService } from '../services/api/profileService';
+import { UserProfile, UpdateProfileData, Achievement, Activity, ProfileStats } from '../types/profile';
+import { ProfileTabs } from '../components/profile/ProfileTabs';
+import { ProfileInfoTab } from '../components/profile/ProfileInfoTab';
+import { ProfileAchievementsTab } from '../components/profile/ProfileAchievementsTab';
+import { ProfileActivityTab } from '../components/profile/ProfileActivityTab';
+import { ProfileSettingsTab } from '../components/profile/ProfileSettingsTab';
+import { ProfileStats as ProfileStatsComponent } from '../components/profile/ProfileStats';
 import { colors, spacing, typography } from '../styles';
 
 export const ProfileScreen = () => {
   const { user } = useAppSelector((state) => state.user);
   const dispatch = useAppDispatch();
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [activeTab, setActiveTab] = useState('info');
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [achievements, setAchievements] = useState<Achievement[]>([]);
+  const [activities, setActivities] = useState<Activity[]>([]);
+  const [stats, setStats] = useState<ProfileStats | null>(null);
+
+  // Загрузка данных профиля
+  useEffect(() => {
+    const loadProfileData = async () => {
+      try {
+        setIsLoading(true);
+        const [profileData, achievementsData, activitiesData, statsData] = await Promise.all([
+          profileService.getProfile(),
+          profileService.getAchievements(),
+          profileService.getActivities(),
+          profileService.getProfileStats(),
+        ]);
+        
+        setProfile(profileData);
+        setAchievements(achievementsData);
+        setActivities(activitiesData);
+        setStats(statsData);
+      } catch (error) {
+        console.error('Error loading profile data:', error);
+        Alert.alert('Ошибка', 'Не удалось загрузить данные профиля');
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    loadProfileData();
+  }, []);
 
   const handleLogout = async () => {
     Alert.alert(
@@ -44,77 +87,122 @@ export const ProfileScreen = () => {
     );
   };
 
-  const menuItems = [
-    { title: 'Редактировать профиль', icon: '✏️', onPress: () => {} },
-    { title: 'Настройки', icon: '⚙️', onPress: () => {} },
-    { title: 'Уведомления', icon: '🔔', onPress: () => {} },
-    { title: 'Помощь', icon: '❓', onPress: () => {} },
-    { title: 'О приложении', icon: 'ℹ️', onPress: () => {} },
-  ];
+  const handleSaveProfile = async (data: UpdateProfileData) => {
+    if (!profile) return;
+
+    try {
+      setIsSaving(true);
+      const updatedProfile = await profileService.updateProfile(data);
+      setProfile(updatedProfile);
+      setIsEditing(false);
+      Alert.alert('Успешно', 'Профиль обновлен');
+    } catch (error) {
+      console.error('Error updating profile:', error);
+      Alert.alert('Ошибка', 'Не удалось обновить профиль');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleStartEditing = () => {
+    setIsEditing(true);
+  };
+
+  const handleCancelEditing = () => {
+    setIsEditing(false);
+  };
+
+  if (isLoading) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <StatusBar barStyle="dark-content" backgroundColor={colors.white} />
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color={colors.primary} />
+          <Text style={styles.loadingText}>Загрузка профиля...</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (!profile) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <StatusBar barStyle="dark-content" backgroundColor={colors.white} />
+        <View style={styles.errorContainer}>
+          <Text style={styles.errorText}>Не удалось загрузить профиль</Text>
+          <TouchableOpacity style={styles.retryButton} onPress={() => {
+            // Перезагружаем данные профиля
+            const loadProfileData = async () => {
+              try {
+                setIsLoading(true);
+                const [profileData, achievementsData, activitiesData, statsData] = await Promise.all([
+                  profileService.getProfile(),
+                  profileService.getAchievements(),
+                  profileService.getActivities(),
+                  profileService.getProfileStats(),
+                ]);
+                
+                setProfile(profileData);
+                setAchievements(achievementsData);
+                setActivities(activitiesData);
+                setStats(statsData);
+              } catch (error) {
+                console.error('Error loading profile data:', error);
+                Alert.alert('Ошибка', 'Не удалось загрузить данные профиля');
+              } finally {
+                setIsLoading(false);
+              }
+            };
+            loadProfileData();
+          }}>
+            <Text style={styles.retryButtonText}>Попробовать снова</Text>
+          </TouchableOpacity>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  const renderTabContent = () => {
+    switch (activeTab) {
+      case 'info':
+        return (
+          <ProfileInfoTab
+            profile={profile}
+            isEditing={isEditing}
+            onSave={handleSaveProfile}
+            onCancel={handleCancelEditing}
+            onStartEdit={handleStartEditing}
+            isSaving={isSaving}
+          />
+        );
+      case 'achievements':
+        return <ProfileAchievementsTab achievements={achievements} />;
+      case 'activity':
+        return <ProfileActivityTab activities={activities} />;
+      case 'settings':
+        return <ProfileSettingsTab onLogout={handleLogout} />;
+      default:
+        return null;
+    }
+  };
 
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar barStyle="dark-content" backgroundColor={colors.white} />
-      <ScrollView style={styles.scrollContainer}>
       <View style={styles.header}>
-        <View style={styles.avatarContainer}>
-          <View style={styles.avatar}>
-            <Text style={styles.avatarText}>
-              {user?.firstName?.charAt(0) || 'U'}
-            </Text>
-          </View>
-        </View>
-        
-        <Text style={styles.name}>
-          {user?.firstName} {user?.lastName}
-        </Text>
-        <Text style={styles.email}>{user?.email}</Text>
-        <Text style={styles.role}>
-          {user?.role === 'admin' ? 'Администратор' : 'Ментор'}
+        <Text style={styles.title}>Профиль</Text>
+        <Text style={styles.subtitle}>
+          Управление личными данными и настройками аккаунта
         </Text>
       </View>
 
-      <View style={styles.statsContainer}>
-        <View style={styles.statItem}>
-          <Text style={styles.statNumber}>15</Text>
-          <Text style={styles.statLabel}>Завершенных курсов</Text>
-        </View>
-        <View style={styles.statItem}>
-          <Text style={styles.statNumber}>32</Text>
-          <Text style={styles.statLabel}>Выполненных заданий</Text>
-        </View>
-        <View style={styles.statItem}>
-          <Text style={styles.statNumber}>4.8</Text>
-          <Text style={styles.statLabel}>Средняя оценка</Text>
-        </View>
-      </View>
+      {stats && <ProfileStatsComponent stats={stats} />}
 
-      <View style={styles.menuContainer}>
-        {menuItems.map((item, index) => (
-          <TouchableOpacity
-            key={index}
-            style={styles.menuItem}
-            onPress={item.onPress}
-          >
-            <View style={styles.menuItemLeft}>
-              <Text style={styles.menuIcon}>{item.icon}</Text>
-              <Text style={styles.menuTitle}>{item.title}</Text>
-            </View>
-            <Text style={styles.menuArrow}>›</Text>
-          </TouchableOpacity>
-        ))}
-      </View>
+      <ProfileTabs activeTab={activeTab} onTabChange={setActiveTab} />
 
-      <TouchableOpacity
-        style={[styles.logoutButton, isLoading && styles.logoutButtonDisabled]}
-        onPress={handleLogout}
-        disabled={isLoading}
-      >
-        <Text style={styles.logoutButtonText}>
-          {isLoading ? 'Выход...' : 'Выйти из аккаунта'}
-        </Text>
-      </TouchableOpacity>
-      </ScrollView>
+      <View style={styles.content}>
+        {renderTabContent()}
+      </View>
     </SafeAreaView>
   );
 };
@@ -124,112 +212,53 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.background,
   },
-  scrollContainer: {
-    flex: 1,
-  },
   header: {
     backgroundColor: colors.white,
     padding: spacing.xl,
-    alignItems: 'center',
-    marginBottom: spacing.md,
+    paddingBottom: spacing.lg,
   },
-  avatarContainer: {
-    marginBottom: spacing.lg,
+  title: {
+    fontSize: typography.fontSizes.xxl,
+    fontWeight: typography.fontWeights.bold,
+    color: colors.text,
+    marginBottom: spacing.xs,
   },
-  avatar: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: colors.primary,
+  subtitle: {
+    fontSize: typography.fontSizes.md,
+    color: colors.textSecondary,
+  },
+  content: {
+    flex: 1,
+  },
+  loadingContainer: {
+    flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
   },
-  avatarText: {
-    fontSize: typography.fontSizes.xxl,
-    fontWeight: typography.fontWeights.bold,
-    color: colors.white,
-  },
-  name: {
-    fontSize: typography.fontSizes.xl,
-    fontWeight: typography.fontWeights.bold,
-    color: colors.text,
-    marginBottom: spacing.xs,
-  },
-  email: {
+  loadingText: {
+    marginTop: spacing.md,
     fontSize: typography.fontSizes.md,
     color: colors.textSecondary,
-    marginBottom: spacing.xs,
   },
-  role: {
-    fontSize: typography.fontSizes.sm,
-    color: colors.primary,
-    fontWeight: typography.fontWeights.medium,
-  },
-  statsContainer: {
-    flexDirection: 'row',
-    backgroundColor: colors.white,
-    margin: spacing.md,
-    padding: spacing.lg,
-    borderRadius: 12,
-    justifyContent: 'space-around',
-  },
-  statItem: {
-    alignItems: 'center',
-  },
-  statNumber: {
-    fontSize: typography.fontSizes.xxl,
-    fontWeight: typography.fontWeights.bold,
-    color: colors.primary,
-    marginBottom: spacing.xs,
-  },
-  statLabel: {
-    fontSize: typography.fontSizes.sm,
-    color: colors.textSecondary,
-    textAlign: 'center',
-  },
-  menuContainer: {
-    backgroundColor: colors.white,
-    margin: spacing.md,
-    borderRadius: 12,
-    overflow: 'hidden',
-  },
-  menuItem: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: spacing.lg,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.border,
-  },
-  menuItemLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
+  errorContainer: {
     flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: spacing.xl,
   },
-  menuIcon: {
-    fontSize: 20,
-    marginRight: spacing.md,
-  },
-  menuTitle: {
-    fontSize: typography.fontSizes.md,
-    color: colors.text,
-    fontWeight: typography.fontWeights.medium,
-  },
-  menuArrow: {
+  errorText: {
     fontSize: typography.fontSizes.lg,
     color: colors.textSecondary,
+    textAlign: 'center',
+    marginBottom: spacing.lg,
   },
-  logoutButton: {
-    backgroundColor: colors.error,
-    margin: spacing.md,
-    padding: spacing.md,
+  retryButton: {
+    backgroundColor: colors.primary,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
     borderRadius: 8,
-    alignItems: 'center',
   },
-  logoutButtonDisabled: {
-    backgroundColor: colors.gray[400],
-  },
-  logoutButtonText: {
+  retryButtonText: {
     color: colors.white,
     fontSize: typography.fontSizes.md,
     fontWeight: typography.fontWeights.medium,
