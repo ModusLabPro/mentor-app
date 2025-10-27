@@ -24,11 +24,12 @@ export const AssignmentAIReviewModal: React.FC<AssignmentAIReviewModalProps> = (
   review,
   assignment
 }) => {
-  if (!review) {
+  if (!review || !visible) {
     return null;
   }
 
   const formatDate = (dateString: string) => {
+    if (!dateString) return '';
     const date = new Date(dateString);
     return date.toLocaleDateString('ru-RU', {
       year: 'numeric',
@@ -113,7 +114,7 @@ export const AssignmentAIReviewModal: React.FC<AssignmentAIReviewModalProps> = (
                 </Text>
               </View>
               <Text style={styles.statusDate}>
-                {formatDate(review.createdAt)}
+                {review.createdAt ? formatDate(review.createdAt) : ''}
               </Text>
             </View>
           </View>
@@ -129,7 +130,7 @@ export const AssignmentAIReviewModal: React.FC<AssignmentAIReviewModalProps> = (
           )}
 
           {/* Детальный анализ ИИ */}
-          {review && review.aiAnalysis && (
+          {review && review.aiAnalysis && review.aiAnalysis !== null && (
             <View style={styles.card}>
               <Text style={styles.cardTitle}>Детальный анализ ИИ</Text>
               <View style={styles.analysisGrid}>
@@ -170,7 +171,7 @@ export const AssignmentAIReviewModal: React.FC<AssignmentAIReviewModalProps> = (
           )}
 
           {/* Предложения ИИ */}
-          {review.aiAnalysis?.suggestions && review.aiAnalysis.suggestions.length > 0 && (
+          {review && review.aiAnalysis && review.aiAnalysis !== null && review.aiAnalysis.suggestions && review.aiAnalysis.suggestions.length > 0 && (
             <View style={styles.card}>
               <Text style={styles.cardTitle}>Предложения ИИ</Text>
               <View style={styles.suggestionsContainer}>
@@ -185,7 +186,7 @@ export const AssignmentAIReviewModal: React.FC<AssignmentAIReviewModalProps> = (
           )}
 
           {/* Проблемы ИИ */}
-          {review.aiAnalysis?.issues && review.aiAnalysis.issues.length > 0 && (
+          {review && review.aiAnalysis && review.aiAnalysis !== null && review.aiAnalysis.issues && review.aiAnalysis.issues.length > 0 && (
             <View style={styles.card}>
               <Text style={styles.cardTitle}>Выявленные проблемы</Text>
               <View style={styles.issuesContainer}>

@@ -1,5 +1,16 @@
 import { apiService } from './apiService';
-import { Test, CreateTestDto, UpdateTestDto, TestAttempt } from '../../types/tests';
+import { Test, CreateTestDto, UpdateTestDto, TestAttempt, TestReview } from '../../types/tests';
+
+// Type declarations for React Native Web API
+declare global {
+  interface ReadableStream {}
+  interface TextDecoder {}
+  namespace NodeJS {
+    interface ProcessEnv {
+      API_BASE_URL?: string;
+    }
+  }
+}
 
 class TestService {
   async getTests(courseId: number): Promise<Test[]> {
@@ -13,7 +24,7 @@ class TestService {
 
   private getMockTestsForCourse(courseId: number): Test[] {
     // Возвращаем тесты для разных уроков курса
-    const mockTests: Test[] = [
+    const mockTests = [
       {
         id: 1,
         title: 'Тест по основам менторинга',
@@ -101,7 +112,7 @@ class TestService {
       }
     ];
 
-    return mockTests;
+    return mockTests as Test[];
   }
 
   async getTestById(testId: number): Promise<Test> {
@@ -277,8 +288,8 @@ class TestService {
     return apiService.post<any>(`/tests/${testId}/review-with-ai`);
   }
 
-  async generateTestWithAI(courseId: number, prompt: string): Promise<ReadableStream> {
-    const url = `${process.env.API_BASE_URL || 'http://localhost:4000/api'}/tests/generate-ai`;
+  async generateTestWithAI(courseId: number, prompt: string): Promise<any> {
+    const url = `${process.env?.API_BASE_URL || 'http://localhost:4000/api'}/tests/generate-ai`;
     const token = await import('@react-native-async-storage/async-storage').then(storage => storage.default.getItem('token'));
     
     const response = await fetch(url, {
@@ -295,12 +306,13 @@ class TestService {
       throw new Error(errorData.message || `HTTP error! status: ${response.status}`);
     }
 
-    return response.body!;
+    return (response as any).body!;
   }
 
-  async parseStream(stream: ReadableStream): Promise<AsyncGenerator<string>> {
-    const reader = stream.getReader();
-    const decoder = new TextDecoder();
+  async parseStream(stream: any): Promise<AsyncGenerator<string>> {
+    const reader = (stream as any).getReader();
+    const TextDecoderClass = (globalThis as any).TextDecoder;
+    const decoder = new TextDecoderClass();
 
     return (async function* () {
       try {

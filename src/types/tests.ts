@@ -5,6 +5,7 @@ export interface Test {
   description: string;
   instructions: string;
   timeLimit?: number; // в минутах
+  duration?: number; // в минутах
   maxAttempts?: number;
   passingScore: number;
   questions: TestQuestion[];
@@ -77,6 +78,20 @@ export interface TestReview {
   reviewerId: number;
   score: number;
   feedback: string;
+  aiFeedback?: string;
+  aiAnalysis?: {
+    overallScore: number;
+    questionQuality: number;
+    difficultyLevel: number;
+    coverageScore: number;
+    technicalScore?: number;
+    effectivenessScore?: number;
+    suggestions: string[];
+    issues: string[];
+    problematicQuestions?: string[];
+  };
+  adminFeedback?: string;
+  adminScore?: number;
   status: 'pending' | 'approved' | 'rejected';
   createdAt: string;
   updatedAt: string;

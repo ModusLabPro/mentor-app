@@ -91,8 +91,10 @@ export const AssignmentDetailScreen = () => {
       // Загружаем результаты ИИ если задание выполнено
       try {
         const aiResults = await assignmentService.getAssignmentAIReview(assignmentId);
-        if (aiResults && aiResults.length > 0) {
+        if (aiResults && aiResults.length > 0 && aiResults[0]) {
           setAiReviewResults(aiResults[0]);
+        } else {
+          setAiReviewResults(null);
         }
       } catch (error) {
         console.error('Error loading AI review results:', error);

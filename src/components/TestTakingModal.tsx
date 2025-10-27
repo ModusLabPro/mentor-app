@@ -172,15 +172,6 @@ export const TestTakingModal: React.FC<TestTakingModalProps> = ({
 
   const currentQuestion = test.questions?.[currentQuestionIndex];
   const totalQuestions = test.questions?.length || 0;
-  
-  // Отладочное логирование
-  console.log('TestTakingModal render:', {
-    test: test,
-    questions: test?.questions,
-    currentQuestionIndex,
-    currentQuestion,
-    totalQuestions
-  });
 
   return (
     <Modal

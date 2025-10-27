@@ -58,11 +58,14 @@ export const TestDetailScreen = () => {
       // Загружаем результаты ИИ если тест завершен
       try {
         const reviews = await testService.getTestReviews(testId);
-        if (reviews && reviews.length > 0) {
+        if (reviews && reviews.length > 0 && reviews[0]) {
           setTestReview(reviews[0]);
+        } else {
+          setTestReview(null);
         }
       } catch (error) {
         console.error('Error loading test review:', error);
+        setTestReview(null);
       }
     } catch (error) {
       console.error('Error loading test:', error);

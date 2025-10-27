@@ -25,7 +25,7 @@ export const TestReviewModal: React.FC<TestReviewModalProps> = ({
   test,
   review,
 }) => {
-  if (!test) {
+  if (!test || !visible) {
     return null;
   }
 
@@ -60,6 +60,7 @@ export const TestReviewModal: React.FC<TestReviewModalProps> = ({
   };
 
   const formatDate = (dateString: string) => {
+    if (!dateString) return '';
     const date = new Date(dateString);
     return date.toLocaleDateString('ru-RU', {
       year: 'numeric',
@@ -138,7 +139,7 @@ export const TestReviewModal: React.FC<TestReviewModalProps> = ({
                   </Text>
                 </View>
                 <Text style={styles.statusDate}>
-                  {formatDate(review.createdAt)}
+                  {review.createdAt ? formatDate(review.createdAt) : ''}
                 </Text>
               </View>
             </View>
@@ -155,7 +156,7 @@ export const TestReviewModal: React.FC<TestReviewModalProps> = ({
           )}
 
           {/* Детальный анализ AI */}
-          {review && review.aiAnalysis && (
+          {review && review.aiAnalysis && review.aiAnalysis !== null && (
             <View style={styles.card}>
               <Text style={styles.cardTitle}>Детальный анализ AI</Text>
               <View style={styles.analysisGrid}>
@@ -204,7 +205,7 @@ export const TestReviewModal: React.FC<TestReviewModalProps> = ({
           )}
 
           {/* Предложения AI */}
-          {review.aiAnalysis?.suggestions && review.aiAnalysis.suggestions.length > 0 && (
+          {review && review.aiAnalysis && review.aiAnalysis !== null && review.aiAnalysis.suggestions && review.aiAnalysis.suggestions.length > 0 && (
             <View style={styles.card}>
               <Text style={styles.cardTitle}>Предложения AI</Text>
               <View style={styles.suggestionsContainer}>
@@ -219,7 +220,7 @@ export const TestReviewModal: React.FC<TestReviewModalProps> = ({
           )}
 
           {/* Проблемы AI */}
-          {review.aiAnalysis?.issues && review.aiAnalysis.issues.length > 0 && (
+          {review && review.aiAnalysis && review.aiAnalysis !== null && review.aiAnalysis.issues && review.aiAnalysis.issues.length > 0 && (
             <View style={styles.card}>
               <Text style={styles.cardTitle}>Выявленные проблемы</Text>
               <View style={styles.issuesContainer}>
@@ -234,7 +235,7 @@ export const TestReviewModal: React.FC<TestReviewModalProps> = ({
           )}
 
           {/* Проблемные вопросы */}
-          {review.aiAnalysis?.problematicQuestions && review.aiAnalysis.problematicQuestions.length > 0 && (
+          {review && review.aiAnalysis && review.aiAnalysis !== null && review.aiAnalysis.problematicQuestions && review.aiAnalysis.problematicQuestions.length > 0 && (
             <View style={styles.card}>
               <Text style={styles.cardTitle}>Проблемные вопросы</Text>
               <View style={styles.problematicQuestionsContainer}>
