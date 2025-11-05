@@ -244,54 +244,38 @@ class AssignmentService {
   async generateCase(courseId: number, assignmentId: number, expertise: string): Promise<string> {
     console.log('🔍 API: Sending generateCase request:', { courseId, assignmentId, expertise });
     
-    const url = `${process.env.API_BASE_URL || 'http://localhost:4000/api'}/courses/${courseId}/assignments/${assignmentId}/ai-session-trainer-generate-case`;
-    const token = await import('@react-native-async-storage/async-storage').then(storage => storage.default.getItem('token'));
-    
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token && { Authorization: `Bearer ${token}` }),
-      },
-      body: JSON.stringify({ expertise }),
-    });
-
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(errorData.message || `HTTP error! status: ${response.status}`);
+    try {
+      const data = await apiService.post<{ response: string }>(
+        `/courses/${courseId}/assignments/${assignmentId}/ai-session-trainer-generate-case`,
+        { expertise }
+      );
+      
+      console.log('✅ API: Received case response:', data.response?.substring(0, 200));
+      return data.response;
+    } catch (error) {
+      console.error('❌ API: Error generating case:', error);
+      throw error;
     }
-
-    const data = await response.json();
-    console.log('✅ API: Received case response:', data.response?.substring(0, 200));
-    return data.response;
   }
 
   async generateAIResponse(courseId: number, assignmentId: number, message: string, conversationHistory?: any[]): Promise<string> {
     console.log('🔍 API: Sending generateAIResponse request:', { courseId, assignmentId, message: message.substring(0, 100) });
     
-    const url = `${process.env.API_BASE_URL || 'http://localhost:4000/api'}/courses/${courseId}/assignments/${assignmentId}/ai-session-trainer-chat`;
-    const token = await import('@react-native-async-storage/async-storage').then(storage => storage.default.getItem('token'));
-    
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token && { Authorization: `Bearer ${token}` }),
-      },
-      body: JSON.stringify({
-        message,
-        conversationHistory
-      }),
-    });
-
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(errorData.message || `HTTP error! status: ${response.status}`);
+    try {
+      const data = await apiService.post<{ response: string }>(
+        `/courses/${courseId}/assignments/${assignmentId}/ai-session-trainer-chat`,
+        {
+          message,
+          conversationHistory
+        }
+      );
+      
+      console.log('✅ API: Received AI response:', data.response?.substring(0, 200));
+      return data.response;
+    } catch (error) {
+      console.error('❌ API: Error generating AI response:', error);
+      throw error;
     }
-
-    const data = await response.json();
-    console.log('✅ API: Received AI response:', data.response?.substring(0, 200));
-    return data.response;
   }
 
   async parseStream(stream: ReadableStream): Promise<AsyncGenerator<string>> {

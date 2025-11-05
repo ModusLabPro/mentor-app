@@ -1,5 +1,9 @@
-import { Platform } from 'react-native';
+import { Platform, NativeModules } from 'react-native';
 import RNFS from 'react-native-fs';
+import { Audio, getRealPath } from 'react-native-compressor';
+
+// Используем react-native-compressor Audio.compress для извлечения аудио из видео
+// Audio.compress автоматически извлекает аудио из MP4 файлов и конвертирует в MP3
 
 export interface AudioExtractionOptions {
   format?: 'mp3' | 'wav' | 'm4a';
@@ -9,7 +13,7 @@ export interface AudioExtractionOptions {
 }
 
 export interface AudioExtractionResult {
-  audioBlob: any; // В React Native это может быть мок-объект
+  audioBlob: any; // В React Native это может быть объект с uri
   duration: number;
   sampleRate: number;
   format: string;
@@ -20,7 +24,7 @@ export interface AudioExtractionResult {
 export class AudioExtractor {
   /**
    * Извлекает аудио из видео файла
-   * Реальная реализация для React Native
+   * Реальная реализация для React Native с использованием FFmpeg
    */
   static async extractAudioFromVideo(
     videoFile: any, 
@@ -34,41 +38,188 @@ export class AudioExtractor {
         throw new Error('Файл не является видео');
       }
 
+      if (!videoFile.uri) {
+        throw new Error('Не указан путь к видео файлу');
+      }
+
       const format = options.format || 'mp3';
-      const duration = this.estimateVideoDuration(videoFile);
+      const bitrate = options.bitrate || (options.quality === 'high' ? 320 : options.quality === 'medium' ? 192 : 128);
       const sampleRate = options.sampleRate || 44100;
       
+      // Получаем путь к видео файлу
+      // Используем fileCopyUri если доступен (копия файла в доступном месте)
+      // Иначе используем uri
+      let videoPath = videoFile.fileCopyUri || videoFile.uri;
+      console.log('Исходный URI видео файла:', videoPath);
+      console.log('fileCopyUri:', videoFile.fileCopyUri);
+      console.log('uri:', videoFile.uri);
+      
+      // Обрабатываем разные форматы URI в React Native
+      // Убираем лишние слэши в начале пути
+      if (videoPath.startsWith('/file://')) {
+        videoPath = videoPath.replace('/file://', '');
+      } else if (videoPath.startsWith('file://')) {
+        videoPath = videoPath.replace('file://', '');
+      } else if (videoPath.startsWith('content://')) {
+        // Для Android content:// URI нужно копировать файл во временную директорию
+        console.log('Обнаружен content:// URI, копируем файл...');
+        
+        // Сначала пробуем использовать fileCopyUri если он есть
+        if (videoFile.fileCopyUri) {
+          videoPath = videoFile.fileCopyUri.replace('file://', '');
+          console.log('Используем fileCopyUri:', videoPath);
+        } else {
+          // Если fileCopyUri нет, копируем файл через react-native-fs
+          // Для content:// URI используем специальный метод
+          const tempFileName = `temp_video_${Date.now()}.${videoFile.name?.split('.').pop() || 'mp4'}`;
+          const tempPath = `${RNFS.DocumentDirectoryPath}/${tempFileName}`;
+          
+          console.log('Копируем файл из content:// в:', tempPath);
+          
+          try {
+            // Для content:// URI используем copyFile с поддержкой URI
+            // RNFS.copyFile может работать с content:// URI на Android
+            await RNFS.copyFile(videoFile.uri, tempPath);
+            
+            console.log('Файл успешно скопирован в:', tempPath);
+            // Убеждаемся, что путь правильный - без file:// префикса для RNFS
+            videoPath = tempPath;
+          } catch (copyError) {
+            console.error('Ошибка копирования файла из content:// через RNFS:', copyError);
+            
+            // Если RNFS.copyFile не работает, пробуем через readFile/writeFile
+            // Но это может быть медленно для больших файлов
+            try {
+              console.log('Пробуем альтернативный метод копирования...');
+              
+              // Читаем файл по частям (для больших файлов)
+              const chunkSize = 1024 * 1024; // 1MB chunks
+              const fileSize = videoFile.size || 0;
+              
+              if (fileSize > 100 * 1024 * 1024) { // > 100MB
+                throw new Error('Файл слишком большой для копирования. Размер: ' + (fileSize / (1024 * 1024)).toFixed(2) + 'MB');
+              }
+              
+              // Читаем весь файл
+              const fileData = await RNFS.readFile(videoFile.uri, 'base64');
+              
+              // Записываем в файл
+              await RNFS.writeFile(tempPath, fileData, 'base64');
+              
+              console.log('Файл успешно скопирован альтернативным методом');
+              videoPath = tempPath;
+            } catch (altError) {
+              console.error('Альтернативный метод копирования также не сработал:', altError);
+              throw new Error(`Не удалось скопировать файл из content:// URI. Попробуйте выбрать файл через файловый менеджер или убедитесь, что у приложения есть разрешение на чтение файлов. Ошибка: ${altError instanceof Error ? altError.message : String(altError)}`);
+            }
+          }
+        }
+      } else if (videoPath.startsWith('ph://')) {
+        // Для iOS Photos framework
+        console.log('Обнаружен ph:// URI, это может не работать напрямую');
+        throw new Error('Выбор файлов из фото библиотеки iOS не поддерживается напрямую. Используйте файловый менеджер.');
+      }
+      
+      // Декодируем URI если нужно
+      try {
+        videoPath = decodeURI(videoPath);
+      } catch (e) {
+        // Игнорируем ошибки декодирования
+      }
+      
+      // Убеждаемся, что путь правильный - убираем лишние слэши
+      // Путь должен быть без file:// для RNFS.exists
+      if (videoPath.startsWith('/file://')) {
+        videoPath = videoPath.replace('/file://', '');
+      } else if (videoPath.startsWith('file://')) {
+        videoPath = videoPath.replace('file://', '');
+      }
+      
+      console.log('Обработанный путь к видео файлу:', videoPath);
+      
+      // Проверяем существование файла
+      const fileExists = await RNFS.exists(videoPath);
+      console.log('Файл существует:', fileExists);
+      
+      if (!fileExists) {
+        // Попробуем получить информацию о файле для диагностики
+        try {
+          const fileInfo = await RNFS.stat(videoPath);
+          console.log('Информация о файле:', fileInfo);
+        } catch (statError) {
+          console.error('Ошибка получения информации о файле:', statError);
+        }
+        
+        // Попробуем альтернативные пути
+        const alternativePaths = [
+          videoFile.fileCopyUri?.replace('file://', ''),
+          videoFile.uri?.replace('file://', ''),
+          videoFile.uri,
+        ].filter(Boolean);
+        
+        console.log('Пробуем альтернативные пути:', alternativePaths);
+        
+        for (const altPath of alternativePaths) {
+          if (altPath && altPath !== videoPath) {
+            // Убираем file:// из альтернативного пути
+            const cleanAltPath = altPath.startsWith('file://') ? altPath.replace('file://', '') : altPath;
+            if (cleanAltPath !== videoPath && await RNFS.exists(cleanAltPath)) {
+              console.log('Найден альтернативный путь:', cleanAltPath);
+              videoPath = cleanAltPath;
+              break;
+            }
+          }
+        }
+        
+        // Проверяем еще раз
+        if (!(await RNFS.exists(videoPath))) {
+          throw new Error(`Видео файл не найден по пути: ${videoPath}. Исходный URI: ${videoFile.uri}, fileCopyUri: ${videoFile.fileCopyUri}`);
+        }
+      }
+      
       // Создаем путь для выходного аудио файла
-      const audioFileName = `extracted_audio_${Date.now()}.${format}`;
-      const audioFilePath = `file://${RNFS.DocumentDirectoryPath}/${audioFileName}`;
+      // react-native-compressor Audio.compress всегда возвращает MP3
+      const actualFormat = 'mp3'; // Audio.compress всегда создает MP3
+      const audioFileName = `extracted_audio_${Date.now()}.${actualFormat}`;
+      const actualAudioPath = `${RNFS.DocumentDirectoryPath}/${audioFileName}`;
+      const audioFilePath = `file://${actualAudioPath}`;
       
-      // Копируем видео файл во временную директорию
-      const tempVideoPath = `${RNFS.DocumentDirectoryPath}/temp_video_${Date.now()}.mp4`;
-      await this.copyVideoToTemp(videoFile, tempVideoPath);
-      
-      // Извлекаем аудио используя нативные возможности
-      const actualAudioPath = audioFilePath.replace('file://', '');
-      await this.extractAudioFromVideoFile(tempVideoPath, actualAudioPath, options);
+      // Извлекаем аудио используя react-native-compressor Audio.compress
+      await this.extractAudioFromVideoFile(videoPath, actualAudioPath, {
+        ...options,
+        format: actualFormat as 'mp3' | 'wav' | 'm4a'
+      });
       
       // Получаем информацию о созданном аудио файле
       const audioFileInfo = await RNFS.stat(actualAudioPath);
       
-      // Создаем объект, имитирующий Blob
+      // Получаем длительность из видео или используем оценку
+      let duration: number;
+      try {
+        duration = await this.getVideoDuration(videoPath);
+      } catch (error) {
+        console.warn('Не удалось получить длительность видео, используем оценку:', error);
+        duration = this.estimateVideoDuration(videoFile);
+      }
+      
+      // Создаем объект, имитирующий Blob для React Native
       const audioBlob = {
         size: audioFileInfo.size,
-        type: format === 'mp3' ? 'audio/mpeg' : 'audio/wav',
+        type: actualFormat === 'mp3' ? 'audio/mpeg' : actualFormat === 'wav' ? 'audio/wav' : 'audio/m4a',
+        uri: audioFilePath,
+        name: audioFileName,
         _isRealFile: true,
         _filePath: audioFilePath,
         _duration: duration,
         _sampleRate: sampleRate,
-        _format: format
+        _format: actualFormat
       };
       
       const result: AudioExtractionResult = {
         audioBlob,
         duration,
         sampleRate,
-        format,
+        format: actualFormat, // Используем фактический формат
         filePath: audioFileName,
         audioFilePath: audioFilePath
       };
@@ -78,10 +229,8 @@ export class AudioExtractor {
       console.log('- Размер файла:', (audioFileInfo.size / (1024 * 1024)).toFixed(2), 'MB');
       console.log('- Длительность:', duration.toFixed(1), 'сек');
       console.log('- Частота:', sampleRate, 'Hz');
+      console.log('- Битрейт:', bitrate, 'kbps');
       console.log('- Путь к файлу:', audioFilePath);
-
-      // Удаляем временный видео файл
-      await this.cleanupTempFile(tempVideoPath);
 
       return result;
     } catch (error) {
@@ -101,29 +250,8 @@ export class AudioExtractor {
   }
 
   /**
-   * Копирует видео файл во временную директорию
-   */
-  private static async copyVideoToTemp(videoFile: any, tempPath: string): Promise<void> {
-    try {
-      console.log('Копируем видео файл во временную директорию:', tempPath);
-      
-      // В React Native мы не можем напрямую работать с File объектами
-      // Поэтому создаем простую симуляцию копирования
-      // В реальном приложении здесь будет копирование файла
-      
-      // Создаем простой файл для демонстрации
-      const mockVideoData = 'Mock video file content';
-      await RNFS.writeFile(tempPath, mockVideoData, 'utf8');
-      
-      console.log('Видео файл скопирован во временную директорию');
-    } catch (error) {
-      console.error('Ошибка копирования видео файла:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Извлекает аудио из видео файла используя нативные возможности
+   * Извлекает аудио из видео файла используя react-native-compressor Audio.compress
+   * Audio.compress автоматически извлекает аудио из MP4 файлов через genVideoUsingMuxer
    */
   private static async extractAudioFromVideoFile(
     videoPath: string, 
@@ -131,22 +259,165 @@ export class AudioExtractor {
     options: AudioExtractionOptions
   ): Promise<void> {
     try {
-      console.log('Извлекаем аудио из видео файла...');
+      console.log('Извлекаем аудио из видео файла используя react-native-compressor Audio.compress...');
       console.log('Входной файл:', videoPath);
       console.log('Выходной файл:', audioPath);
       
-      // В React Native мы не можем использовать FFmpeg напрямую
-      // Поэтому создаем симуляцию извлечения аудио
-      // В реальном приложении здесь будет вызов нативного модуля
-      
-      const format = options.format || 'mp3';
+      // Audio.compress всегда возвращает MP3, независимо от запрошенного формата
+      const format = 'mp3'; // Audio.compress всегда создает MP3
+      const bitrate = options.bitrate || (options.quality === 'high' ? 320 : options.quality === 'medium' ? 192 : 128);
       const quality = options.quality || 'low';
-      const bitrate = options.bitrate || 128;
       
-      // Создаем симуляцию аудио файла
-      await this.createSimulatedAudioFile(audioPath, format, quality, bitrate);
+      // Получаем реальный путь к файлу
+      // videoPath уже должен быть правильным путем без file:// префикса
+      // Но для Audio.compress нужно использовать getRealPath для обработки content:// URI
       
-      console.log('Аудио успешно извлечено из видео');
+      // Формируем путь для getRealPath - должен быть с file:// или без
+      // videoPath уже не содержит file:// (мы его убрали ранее)
+      let inputPathForGetRealPath = videoPath;
+      
+      // Убеждаемся, что путь не содержит file:// префикс (если есть, убираем)
+      if (inputPathForGetRealPath.startsWith('file://')) {
+        inputPathForGetRealPath = inputPathForGetRealPath.replace('file://', '');
+      }
+      // Убираем лишние слэши в начале
+      while (inputPathForGetRealPath.startsWith('/')) {
+        inputPathForGetRealPath = inputPathForGetRealPath.substring(1);
+      }
+      
+      // Добавляем file:// для getRealPath (если путь не content://)
+      if (!inputPathForGetRealPath.startsWith('content://')) {
+        inputPathForGetRealPath = `file:///${inputPathForGetRealPath}`;
+      }
+      
+      console.log('Путь к видео перед getRealPath:', inputPathForGetRealPath);
+      
+      // Получаем реальный путь через getRealPath
+      // getRealPath обрабатывает content:// URI и другие форматы
+      // getRealPath возвращает путь с file:// префиксом
+      let realVideoPath: string;
+      try {
+        realVideoPath = await getRealPath(inputPathForGetRealPath, 'video');
+        console.log('Реальный путь к видео от getRealPath:', realVideoPath);
+      } catch (getRealPathError) {
+        console.warn('Ошибка getRealPath, используем исходный путь:', getRealPathError);
+        // Если getRealPath не работает, используем исходный путь с file://
+        // videoPath уже не содержит file://, поэтому добавляем его
+        realVideoPath = `file:///${videoPath}`;
+      }
+      
+      // Нормализуем путь - убираем лишние слэши и двойные префиксы
+      // getRealPath уже возвращает путь с file://, поэтому не нужно добавлять его снова
+      let finalVideoPath = String(realVideoPath).trim();
+      
+      console.log('Путь после getRealPath (до нормализации):', finalVideoPath);
+      
+      // Убираем все лишние слэши в начале пути
+      while (finalVideoPath.startsWith('/')) {
+        finalVideoPath = finalVideoPath.substring(1);
+      }
+      
+      // Убираем двойной и тройной префикс file:// (если есть file://file://, делаем file://)
+      // Обрабатываем все варианты: file://file:///, file://file://, file://file:///
+      while (finalVideoPath.includes('file://file://')) {
+        finalVideoPath = finalVideoPath.replace(/file:\/\/file:\/\//g, 'file://');
+      }
+      
+      // Убеждаемся, что путь начинается с file:// (не добавляем, если уже есть)
+      if (!finalVideoPath.startsWith('file://')) {
+        // Если путь начинается с /, добавляем file://
+        if (finalVideoPath.startsWith('/')) {
+          finalVideoPath = `file://${finalVideoPath}`;
+        } else {
+          // Если путь не начинается ни с file://, ни с /, добавляем file:///
+          finalVideoPath = `file:///${finalVideoPath}`;
+        }
+      }
+      
+      // Нормализуем формат - путь должен быть file:///path/to/file
+      // Убираем множественные слэши после file://, оставляя только один
+      finalVideoPath = finalVideoPath.replace(/^file:\/\/\/+/, 'file:///');
+      
+      // Убеждаемся, что после file:// есть один слэш (file:///path)
+      if (finalVideoPath.match(/^file:\/\/[^/]/)) {
+        // file://path -> file:///path
+        finalVideoPath = finalVideoPath.replace(/^file:\/\//, 'file:///');
+      }
+      
+      // Финальная проверка - путь должен быть file:///path/to/file
+      if (!finalVideoPath.startsWith('file:///')) {
+        console.error('КРИТИЧЕСКАЯ ОШИБКА: Путь в неправильном формате:', finalVideoPath);
+        // Принудительно исправляем - убираем все лишнее и формируем правильный путь
+        // Извлекаем путь без префиксов
+        let cleanPath = finalVideoPath
+          .replace(/^\/+/, '')
+          .replace(/^file:\/\/file:\/\/\/+/, '')
+          .replace(/^file:\/\/file:\/\/+/, '')
+          .replace(/^file:\/\/\/+/, '')
+          .replace(/^file:\/\/+/, '')
+          .replace(/^file:\//, '');
+        
+        // Формируем правильный путь
+        finalVideoPath = `file:///${cleanPath}`;
+      }
+      
+      // Последняя проверка - убеждаемся, что нет двойных префиксов
+      if (finalVideoPath.includes('file://file://')) {
+        console.warn('Обнаружен двойной префикс file://, исправляем...');
+        finalVideoPath = finalVideoPath.replace(/file:\/\/file:\/\//g, 'file://');
+        // Убеждаемся, что после исправления путь правильный
+        if (!finalVideoPath.startsWith('file:///')) {
+          finalVideoPath = finalVideoPath.replace(/^file:\/\//, 'file:///');
+        }
+      }
+      
+      console.log('Финальный путь к видео для Audio.compress:', finalVideoPath);
+      console.log('Проверка формата пути:', {
+        startsWithFileProtocol: finalVideoPath.startsWith('file://'),
+        hasThreeSlashes: finalVideoPath.startsWith('file:///'),
+        hasNoLeadingSlash: !finalVideoPath.startsWith('/file://'),
+        path: finalVideoPath,
+        pathLength: finalVideoPath.length
+      });
+      
+      // Используем Audio.compress для извлечения аудио из видео
+      // Audio.compress автоматически извлекает аудио из MP4 через genVideoUsingMuxer
+      // с параметрами useAudio=true, useVideo=false
+      try {
+        console.log('Вызываем Audio.compress для извлечения аудио...');
+        
+        // Audio.compress извлекает аудио из видео и конвертирует в MP3
+        const compressedAudioPath = await Audio.compress(finalVideoPath, {
+          quality: quality,
+          bitrate: bitrate * 1000, // bitrate в битах (kbps * 1000)
+          // Можно также указать channels и samplerate если нужно
+        });
+        
+        console.log('Аудио извлечено, путь:', compressedAudioPath);
+        
+        // Audio.compress возвращает MP3 файл, поэтому просто копируем его в нужное место
+        const sourcePath = compressedAudioPath.replace('file://', '');
+        
+        // Копируем файл в нужный путь (audioPath уже содержит правильное расширение)
+        await RNFS.copyFile(sourcePath, audioPath);
+        
+        console.log('Аудио файл сохранен:', audioPath);
+        
+        // Удаляем временный файл из кэша библиотеки если нужно
+        try {
+          // Проверяем, что это не один и тот же файл
+          if (sourcePath !== audioPath && await RNFS.exists(sourcePath)) {
+            // Удаляем временный файл если он отличается от целевого
+            await RNFS.unlink(sourcePath);
+          }
+        } catch (e) {
+          console.warn('Не удалось удалить временный файл:', e);
+        }
+        
+      } catch (error: any) {
+        console.error('Ошибка при использовании Audio.compress:', error);
+        throw new Error(`Не удалось извлечь аудио из видео: ${error.message || error}`);
+      }
     } catch (error) {
       console.error('Ошибка извлечения аудио из видео файла:', error);
       throw error;
@@ -154,89 +425,33 @@ export class AudioExtractor {
   }
 
   /**
-   * Создает симулированный аудио файл
+   * Получает длительность видео используя react-native-compressor getVideoMetaData
    */
-  private static async createSimulatedAudioFile(
-    audioPath: string,
-    format: string,
-    quality: string,
-    bitrate: number
-  ): Promise<void> {
+  private static async getVideoDuration(videoPath: string): Promise<number> {
     try {
-      console.log('Создаем симулированный аудио файл...');
+      // Используем react-native-compressor для получения метаданных видео
+      const { getVideoMetaData } = await import('react-native-compressor');
       
-      // Создаем простой WAV файл с минимальными данными
-      const wavData = this.createSimpleWavFile();
+      try {
+        // getVideoMetaData ожидает путь с file://
+        const pathForMetadata = videoPath.startsWith('file://') ? videoPath : `file://${videoPath}`;
+        const metadata = await getVideoMetaData(pathForMetadata);
+        if (metadata && metadata.duration && metadata.duration > 0) {
+          return metadata.duration;
+        }
+      } catch (error) {
+        console.warn('Ошибка получения длительности через getVideoMetaData:', error);
+      }
       
-      // Записываем данные в файл как binary
-      await RNFS.writeFile(audioPath, wavData, 'utf8');
-      
-      console.log('Симулированный аудио файл создан:', audioPath);
+      // Если не удалось получить длительность, используем оценку
+      throw new Error('Получение длительности через getVideoMetaData не удалось, используем оценку');
     } catch (error) {
-      console.error('Ошибка создания симулированного аудио файла:', error);
+      console.warn('Ошибка получения длительности видео:', error);
       throw error;
     }
   }
 
-  /**
-   * Создает простой WAV файл
-   */
-  private static createSimpleWavFile(): string {
-    // Создаем минимальный WAV файл (1 секунда тишины)
-    const sampleRate = 44100;
-    const channels = 1;
-    const bitsPerSample = 16;
-    const duration = 1; // 1 секунда
-    const dataSize = sampleRate * channels * bitsPerSample / 8 * duration;
-    const fileSize = 44 + dataSize;
-    
-    console.log('Создаем простой WAV файл:', {
-      duration,
-      sampleRate,
-      channels,
-      bitsPerSample,
-      dataSize,
-      fileSize
-    });
-    
-    // Создаем WAV заголовок
-    const header = new ArrayBuffer(44);
-    const view = new DataView(header);
-    
-    // RIFF заголовок
-    view.setUint32(0, 0x46464952, true); // "RIFF"
-    view.setUint32(4, fileSize - 8, true); // Размер файла
-    view.setUint32(8, 0x45564157, true); // "WAVE"
-    
-    // fmt chunk
-    view.setUint32(12, 0x20746d66, true); // "fmt "
-    view.setUint32(16, 16, true); // Размер fmt chunk
-    view.setUint16(20, 1, true); // Audio format (PCM)
-    view.setUint16(22, channels, true); // Количество каналов
-    view.setUint32(24, sampleRate, true); // Sample rate
-    view.setUint32(28, sampleRate * channels * bitsPerSample / 8, true); // Byte rate
-    view.setUint16(32, channels * bitsPerSample / 8, true); // Block align
-    view.setUint16(34, bitsPerSample, true); // Bits per sample
-    
-    // data chunk
-    view.setUint32(36, 0x61746164, true); // "data"
-    view.setUint32(40, dataSize, true); // Размер данных
-    
-    // Создаем заголовок как строку
-    const headerBytes = new Uint8Array(header);
-    let headerString = '';
-    for (let i = 0; i < headerBytes.length; i++) {
-      headerString += String.fromCharCode(headerBytes[i]);
-    }
-    
-    // Создаем тишину (нули) как строку
-    let silenceString = '';
-    for (let i = 0; i < dataSize; i++) {
-      silenceString += String.fromCharCode(0);
-    }
-    
-    return headerString + silenceString;
-  }
+
 
   /**
    * Удаляет временный файл

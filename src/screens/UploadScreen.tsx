@@ -174,18 +174,26 @@ export const UploadScreen = () => {
       let fileToProcess = fileToUpload;
       let uploadOptions: UploadOptions;
 
-      // Определяем режим загрузки
+      // Определяем режим загрузки (как в mentor-react)
       if (uploadMode === 'audio-extract' && extractedAudio) {
         // Загружаем извлеченное аудио
-        // Проверяем, есть ли реальный файл
-        if (extractedAudio.audioFilePath && extractedAudio.audioFilePath.startsWith('file://')) {
+        // Проверяем, есть ли реальный файл с uri
+        if (extractedAudio.audioFilePath && extractedAudio.audioBlob) {
+          // Формируем имя файла как в mentor-react: originalFileName_audio.{format}
+          // Используем фактический формат извлеченного аудио (может быть m4a на iOS/Android)
+          const originalName = fileToUpload.name || 'video';
+          const nameWithoutExt = originalName.replace(/\.[^/.]+$/, '');
+          const actualFormat = extractedAudio.format || 'mp3';
+          const audioFileName = `${nameWithoutExt}_audio.${actualFormat}`;
+          
           fileToProcess = {
-            name: `audio_from_${fileToUpload.name}`,
-            type: extractedAudio.audioBlob.type,
-            size: extractedAudio.audioBlob.size,
+            name: audioFileName,
+            type: extractedAudio.audioBlob.type || (actualFormat === 'mp3' ? 'audio/mpeg' : 'audio/m4a'),
+            size: extractedAudio.audioBlob.size || 0,
             uri: extractedAudio.audioFilePath
           };
           console.log('Используем извлеченное аудио файл:', extractedAudio.audioFilePath);
+          console.log('Имя файла:', audioFileName);
         } else {
           // Если нет реального файла, используем оригинальный файл
           console.log('Нет реального аудио файла, используем оригинальный файл');
@@ -199,7 +207,7 @@ export const UploadScreen = () => {
           originalFileName: fileToUpload.name,
           isAudioExtract: true,
           extractAudio: true,
-          audioFormat: 'mp3'
+          audioFormat: extractedAudio.format === 'm4a' ? 'm4a' : 'mp3' // Используем фактический формат
         };
       } else if (uploadMode === 'audio-only' && fileToUpload.type?.startsWith('audio/')) {
         // Загружаем аудио файл как есть
@@ -366,15 +374,15 @@ export const UploadScreen = () => {
                 )}
 
                 <TouchableOpacity 
-                  style={[styles.uploadSelectedButton, isUploading && styles.uploadSelectedButtonDisabled]}
+                  style={[styles.uploadSelectedButton, (isUploading || isExtractingAudio) && styles.uploadSelectedButtonDisabled]}
                   onPress={() => handleUpload()}
-                  disabled={isUploading}
+                  disabled={isUploading || isExtractingAudio}
                 >
                   {isUploading ? (
                     <ActivityIndicator size="small" color={colors.white} />
                   ) : (
                     <Text style={styles.uploadSelectedButtonText}>
-                      {uploadMode === 'audio-extract' ? 'Загрузить аудио' : 'Загрузить файл'}
+                      {uploadMode === 'audio-extract' && extractedAudio ? 'Загрузить аудио' : 'Загрузить файл'}
                     </Text>
                   )}
                 </TouchableOpacity>

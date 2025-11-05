@@ -16,6 +16,10 @@ end
 
 target 'MentorApp' do
   config = use_native_modules!
+  
+  # Временно отключаем react-native-ffmpeg из-за проблем с недоступными файлами
+  # Используем нативный подход для извлечения аудио через AVFoundation
+  # pod 'react-native-ffmpeg/audio-lts', :path => '../node_modules/react-native-ffmpeg'
 
   use_react_native!(
     :path => config[:reactNativePath],

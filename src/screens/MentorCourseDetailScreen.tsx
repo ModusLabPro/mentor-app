@@ -184,7 +184,9 @@ export const MentorCourseDetailScreen = () => {
           </View>
         </View>
         
-        <Text style={styles.courseDescription}>{course.description}</Text>
+        {currentStatus === 'not_started' && (
+          <Text style={styles.courseDescription}>{course.description}</Text>
+        )}
         
         <View style={styles.courseMeta}>
           <View style={[styles.difficultyBadge, { backgroundColor: getDifficultyColor(course.difficulty) }]}>

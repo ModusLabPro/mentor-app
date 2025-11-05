@@ -12,9 +12,11 @@ import {
   Alert,
 } from 'react-native';
 import { useRoute, useNavigation } from '@react-navigation/native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { colors, spacing, typography } from '../styles';
 import { sessionService } from '../services/api';
 import { MediaFile, AnalysisResult } from '../types/sessions';
+import { getCompetencyPrompt } from '../utils/competencyPrompts';
 
 export const AnalysisScreen = () => {
   const navigation = useNavigation();
@@ -54,9 +56,69 @@ export const AnalysisScreen = () => {
     error?: string;
   }>>([]);
   const [competencyAccordionOpen, setCompetencyAccordionOpen] = useState<string | null>(null);
+  
+  // Состояния для ИИ-сессий
+  const [aiTrainerSessions, setAiTrainerSessions] = useState<any[]>([]);
+  const [selectedAITrainerSession, setSelectedAITrainerSession] = useState<any>(null);
+  const [aiTrainerAnalysisId, setAiTrainerAnalysisId] = useState<string | null>(null);
+  const [aiTrainerAnalysisProgress, setAiTrainerAnalysisProgress] = useState<{
+    progress: number;
+    stage: string;
+    status: string;
+  }>({ progress: 0, stage: '', status: 'idle' });
 
   useEffect(() => {
-    loadFiles();
+    // Проверяем, есть ли ИИ-сессия в AsyncStorage (как в mentor-react)
+    const checkSavedSession = async () => {
+      try {
+        const savedSession = await AsyncStorage.getItem('ai-trainer-session');
+        if (savedSession) {
+          const sessionData = JSON.parse(savedSession);
+          setSelectedAITrainerSession(sessionData);
+          setSelectedFile(null);
+          setActiveTab('analyzed');
+          // Очищаем AsyncStorage после загрузки
+          await AsyncStorage.removeItem('ai-trainer-session');
+          
+          // Если сессия находится в процессе анализа, запускаем мониторинг
+          if (sessionData.status === 'processing' || sessionData.analysisId) {
+            const analysisId = sessionData.analysisId || `ai-session-${sessionData.id}`;
+            setAiTrainerAnalysisId(analysisId);
+            monitorAITrainerAnalysisProgress(analysisId);
+          }
+          
+          // Загружаем данные анализа, если они есть
+          if (sessionData.analysisData) {
+            const analysisResult = typeof sessionData.analysisData === 'string' 
+              ? JSON.parse(sessionData.analysisData) 
+              : sessionData.analysisData;
+            setAnalysisData(analysisResult);
+          }
+          
+          // Загружаем транскрипцию из conversationData
+          if (sessionData.sessionData?.conversationData) {
+            const transcriptionText = sessionData.sessionData.conversationData.map((m: any) => 
+              `${m.sender === 'mentor' ? 'Ментор' : 'Алексей (ИИ-менти)'}: ${m.content}`
+            ).join('\n\n');
+            setTranscription(transcriptionText);
+          }
+          
+          // Загружаем анализ компетенций, если есть и ID является числом (сессия сохранена в БД)
+          if (sessionData.id && typeof sessionData.id === 'number') {
+            loadAISessionCompetencyAnalysis(sessionData.id);
+          }
+        } else {
+          // Если нет сохраненной сессии, загружаем файлы
+          loadFiles();
+        }
+      } catch (error) {
+        console.error('Ошибка парсинга ИИ-сессии:', error);
+        // В случае ошибки загружаем файлы
+        loadFiles();
+      }
+    };
+    
+    checkSavedSession();
   }, []);
 
   useEffect(() => {
@@ -75,21 +137,123 @@ export const AnalysisScreen = () => {
       setLoading(true);
       console.log('Loading files for analysis...');
       
-      const [unanalyzedData, analyzedData] = await Promise.all([
+      // Сохраняем текущее состояние ИИ-сессии
+      const currentAISession = selectedAITrainerSession;
+      
+      const [unanalyzedData, analyzedData, aiSessionsData] = await Promise.all([
         sessionService.getUnanalyzedFiles(),
-        sessionService.getAnalyzedFiles()
+        sessionService.getAnalyzedFiles(),
+        sessionService.getAITrainerSessions().catch(() => []) // Игнорируем ошибки, если API не поддерживает
       ]);
       
       console.log('📁 AnalysisScreen: Unanalyzed files:', unanalyzedData.length);
       console.log('📁 AnalysisScreen: Analyzed files:', analyzedData.length);
-      console.log('📁 AnalysisScreen: Unanalyzed data:', unanalyzedData);
-      console.log('📁 AnalysisScreen: Analyzed data:', analyzedData);
+      console.log('📁 AnalysisScreen: AI Trainer sessions:', aiSessionsData.length);
       
       setUnanalyzedFiles(unanalyzedData);
       setAnalyzedFiles(analyzedData);
+      setAiTrainerSessions(aiSessionsData || []);
+      
+      // Восстанавливаем состояние ИИ-сессии, если она была выбрана
+      if (currentAISession && aiSessionsData.length > 0) {
+        const restoredSession = aiSessionsData.find((s: any) => s.id === currentAISession.id);
+        if (restoredSession) {
+          setSelectedAITrainerSession(restoredSession);
+          setSelectedFile(null);
+          // Восстанавливаем данные анализа
+          const analysisResult = restoredSession.analysisData ? 
+            (typeof restoredSession.analysisData === 'string' ? JSON.parse(restoredSession.analysisData) : restoredSession.analysisData) 
+            : null;
+          setAnalysisData(analysisResult);
+          setTranscription(restoredSession.sessionData?.conversationData?.map((m: any) => 
+            `${m.sender === 'mentor' ? 'Ментор' : 'Алексей (ИИ-менти)'}: ${m.content}`
+          ).join('\n\n') || '');
+          // Загружаем анализ компетенций для восстановленной ИИ-сессии
+          if (typeof restoredSession.id === 'number') {
+            await loadAISessionCompetencyAnalysis(restoredSession.id);
+          }
+        }
+      }
+      
+      // Поиск сессии по assignmentId и courseId из AsyncStorage (как в mentor-react)
+      const sessionSearchInfo = await AsyncStorage.getItem('ai-trainer-session-search');
+      if (sessionSearchInfo && aiSessionsData.length > 0) {
+        try {
+          const searchData = JSON.parse(sessionSearchInfo);
+          // Очищаем AsyncStorage после использования
+          await AsyncStorage.removeItem('ai-trainer-session-search');
+          
+          // Ищем сессию по assignmentId и courseId с готовым анализом
+          const matchingSession = aiSessionsData.find((session: any) => {
+            // Проверяем, что сессия соответствует assignmentId и courseId
+            const sessionMatches = session.sessionData?.assignmentId === searchData.assignmentId &&
+                                   (session.sessionData?.courseId === searchData.courseId || session.courseId === searchData.courseId);
+            // Проверяем, что у сессии есть готовый анализ
+            const hasAnalysis = session.analysisData && session.status === 'completed';
+            return sessionMatches && hasAnalysis;
+          });
+          
+          if (matchingSession) {
+            // Выбираем найденную сессию с готовым анализом
+            setSelectedAITrainerSession(matchingSession);
+            setSelectedFile(null);
+            setActiveTab('analyzed');
+            setAiTrainerAnalysisId(matchingSession.id.toString());
+            
+            // Загружаем данные анализа
+            const analysisResult = matchingSession.analysisData ? 
+              (typeof matchingSession.analysisData === 'string' ? JSON.parse(matchingSession.analysisData) : matchingSession.analysisData) 
+              : null;
+            setAnalysisData(analysisResult);
+            setTranscription(matchingSession.sessionData?.conversationData?.map((m: any) => 
+              `${m.sender === 'mentor' ? 'Ментор' : 'Алексей (ИИ-менти)'}: ${m.content}`
+            ).join('\n\n') || '');
+            
+            // Загружаем анализ компетенций
+            if (typeof matchingSession.id === 'number') {
+              await loadAISessionCompetencyAnalysis(matchingSession.id);
+            }
+          } else {
+            // Если не нашли сессию с готовым анализом, ищем любую соответствующую сессию
+            const anyMatchingSession = aiSessionsData.find((session: any) => {
+              return session.sessionData?.assignmentId === searchData.assignmentId &&
+                     (session.sessionData?.courseId === searchData.courseId || session.courseId === searchData.courseId);
+            });
+            
+            if (anyMatchingSession) {
+              setSelectedAITrainerSession(anyMatchingSession);
+              setSelectedFile(null);
+              setActiveTab('analyzed');
+              
+              // Загружаем данные анализа, если они есть
+              if (anyMatchingSession.analysisData) {
+                const analysisResult = typeof anyMatchingSession.analysisData === 'string' 
+                  ? JSON.parse(anyMatchingSession.analysisData) 
+                  : anyMatchingSession.analysisData;
+                setAnalysisData(analysisResult);
+              }
+              
+              // Загружаем транскрипцию
+              if (anyMatchingSession.sessionData?.conversationData) {
+                const transcriptionText = anyMatchingSession.sessionData.conversationData.map((m: any) => 
+                  `${m.sender === 'mentor' ? 'Ментор' : 'Алексей (ИИ-менти)'}: ${m.content}`
+                ).join('\n\n');
+                setTranscription(transcriptionText);
+              }
+              
+              // Загружаем анализ компетенций, если ID числовой
+              if (typeof anyMatchingSession.id === 'number') {
+                await loadAISessionCompetencyAnalysis(anyMatchingSession.id);
+              }
+            }
+          }
+        } catch (error) {
+          console.error('Ошибка поиска сессии:', error);
+        }
+      }
 
       // Если есть проанализированные файлы и не выбран файл, выбираем первый
-      if (analyzedData.length > 0 && !selectedFile) {
+      if (analyzedData.length > 0 && !selectedFile && !selectedAITrainerSession) {
         setActiveTab('analyzed');
         await selectFile(analyzedData[0]);
       } else if (analyzedData.length === 0 && unanalyzedData.length > 0) {
@@ -106,6 +270,8 @@ export const AnalysisScreen = () => {
   const selectFile = async (file: MediaFile) => {
     console.log('🎯 AnalysisScreen: selectFile called with file:', file.id, file.originalName);
     setSelectedFile(file);
+    // Сбрасываем выбранную ИИ-сессию при выборе файла
+    setSelectedAITrainerSession(null);
     
     // Сбрасываем состояние компетенций при выборе нового файла
     setCompetencyAccordionOpen(null);
@@ -285,8 +451,272 @@ export const AnalysisScreen = () => {
     setTimeout(checkProgress, 1000);
   };
 
+  // Функции для работы с ИИ-сессиями
+  const loadAISessionCompetencyAnalysis = async (sessionId: number | string) => {
+    try {
+      // Проверяем, является ли ID числом (сессия сохранена в БД)
+      // Если ID строка (например, "ai-trainer-123456"), значит сессия еще не сохранена в БД
+      if (typeof sessionId === 'string' || isNaN(Number(sessionId))) {
+        console.log('⚠️ AnalysisScreen: Session ID is not a number, skipping competency analysis:', sessionId);
+        setCompetencyAnalysis([]);
+        return;
+      }
+
+      console.log('🔍 AnalysisScreen: Loading competency analysis for AI session:', sessionId);
+      const competencyData = await sessionService.getAITrainerCompetencyAnalysis(Number(sessionId));
+      console.log('✅ AnalysisScreen: Competency data received:', competencyData);
+      
+      // Обрабатываем данные анализа компетенций (как в mentor-react)
+      const savedAnalysis = competencyData.map((item: any) => {
+        // Проверяем структуру данных - в mentor-react данные приходят в формате { criterion, result }
+        // где result содержит { competence, definition, markers, overall_competence_observed }
+        if (item.result) {
+          return {
+            criterion: item.criterion,
+            loading: false,
+            result: item.result
+          };
+        }
+        // Если данные приходят в другом формате (прямо как result), используем их
+        // Проверяем, есть ли обязательные поля результата
+        if (item.competence || item.markers || item.overall_competence_observed !== undefined) {
+          return {
+            criterion: item.criterion,
+            loading: false,
+            result: item
+          };
+        }
+        // Если формат неизвестен, возвращаем как есть
+        return {
+          criterion: item.criterion || item.criterion_id || 'unknown',
+          loading: false,
+          result: item
+        };
+      });
+      console.log('✅ AnalysisScreen: Processed competency analysis:', savedAnalysis);
+      setCompetencyAnalysis(savedAnalysis);
+    } catch (error) {
+      console.error('❌ AnalysisScreen: Error loading competency analysis:', error);
+      // Если ошибка 400 или 404, просто не показываем анализ компетенций
+      // Это нормально для сессий, которые еще не проанализированы
+      setCompetencyAnalysis([]);
+    }
+  };
+
+  const selectAITrainerSession = async (session: any) => {
+    console.log('🎯 AnalysisScreen: selectAITrainerSession called with session:', session.id);
+    setSelectedAITrainerSession(session);
+    setSelectedFile(null);
+    
+    // Сбрасываем состояние компетенций при выборе новой сессии
+    setCompetencyAccordionOpen(null);
+    setCompetencyAnalysis([]);
+    
+    // Загружаем данные анализа, если они есть
+    if (session.analysisData) {
+      try {
+        const analysisResult = typeof session.analysisData === 'string' 
+          ? JSON.parse(session.analysisData) 
+          : session.analysisData;
+        setAnalysisData(analysisResult);
+      } catch (error) {
+        console.error('Ошибка парсинга данных анализа:', error);
+        setAnalysisData(null);
+      }
+    } else {
+      setAnalysisData(null);
+    }
+    
+    // Загружаем транскрипцию из conversationData
+    if (session.sessionData?.conversationData) {
+      const transcriptionText = session.sessionData.conversationData.map((m: any) => 
+        `${m.sender === 'mentor' ? 'Ментор' : 'Алексей (ИИ-менти)'}: ${m.content}`
+      ).join('\n\n');
+      setTranscription(transcriptionText);
+    } else {
+      setTranscription('');
+    }
+    
+    // Загружаем анализ компетенций только если ID является числом (сессия сохранена в БД)
+    if (session.id && typeof session.id === 'number') {
+      await loadAISessionCompetencyAnalysis(session.id);
+    } else {
+      console.log('⚠️ AnalysisScreen: Session ID is not a number, skipping competency analysis');
+      setCompetencyAnalysis([]);
+    }
+  };
+
+  const startAITrainerAnalysis = async () => {
+    if (!selectedAITrainerSession) return;
+
+    try {
+      setLoading(true);
+      // Используем универсальный метод startAnalysis, как в mentor-react
+      const result = await sessionService.startAnalysis(undefined, selectedAITrainerSession);
+      setAiTrainerAnalysisId(result.analysisId);
+      setAiTrainerAnalysisProgress({ progress: 0, stage: 'Запуск анализа...', status: 'processing' });
+      
+      // Обновляем статус сессии
+      setSelectedAITrainerSession((prev: any) => ({
+        ...prev,
+        status: 'processing',
+        analysisId: result.analysisId,
+        analysisProgress: 0,
+        analysisStage: 'Запуск анализа...'
+      }));
+      
+      // Запускаем мониторинг прогресса
+      monitorAITrainerAnalysisProgress(result.analysisId);
+      
+      Alert.alert('Анализ запущен', 'Анализ ИИ-сессии будет выполнен в фоновом режиме');
+    } catch (error: any) {
+      console.error('Ошибка запуска анализа ИИ-сессии:', error);
+      const errorMessage = error?.response?.data?.message || error?.message || 'Не удалось запустить анализ';
+      Alert.alert('Ошибка', errorMessage);
+      setAiTrainerAnalysisProgress({ progress: 0, stage: '', status: 'failed' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const monitorAITrainerAnalysisProgress = async (analysisId: string) => {
+    const interval = setInterval(async () => {
+      try {
+        const status = await sessionService.getAnalysisStatus(analysisId);
+        setAiTrainerAnalysisProgress({
+          progress: status.progress,
+          stage: status.stage,
+          status: status.status
+        });
+
+        if (status.status === 'completed') {
+          clearInterval(interval);
+          // Обновляем данные сессии
+          setSelectedAITrainerSession((prev: any) => ({
+            ...prev,
+            status: 'completed',
+            analysisData: JSON.stringify(status.data),
+            analysisProgress: 100
+          }));
+          
+          // Загружаем данные анализа
+          if (status.data) {
+            setAnalysisData(status.data);
+          }
+          
+          Alert.alert('Анализ завершен', 'Анализ ИИ-сессии успешно завершен');
+          // Перезагружаем список сессий
+          loadFiles();
+        } else if (status.status === 'failed') {
+          clearInterval(interval);
+          Alert.alert('Ошибка анализа', 'Не удалось проанализировать ИИ-сессию');
+        }
+      } catch (error) {
+        console.error('Ошибка получения статуса анализа ИИ-сессии:', error);
+        clearInterval(interval);
+      }
+    }, 2000); // Проверяем каждые 2 секунды
+  };
+
   const onRefresh = async () => {
     await loadFiles();
+  };
+
+  // Функция для анализа компетенций (как в mentor-react)
+  const analyzeCompetency = async (criterion: string) => {
+    // Проверяем доступность данных для анализа
+    const hasTranscription = transcription && selectedFile;
+    const hasAISession = selectedAITrainerSession?.sessionData?.conversationData;
+    
+    if (!hasTranscription && !hasAISession) {
+      Alert.alert('Ошибка', 'Нет данных для анализа');
+      return;
+    }
+
+    // Проверяем, не анализируется ли уже этот критерий
+    if (competencyAnalysis.some(a => a.criterion === criterion && a.loading)) {
+      return;
+    }
+
+    // Если есть существующий анализ, удаляем его из базы данных
+    const existingAnalysis = competencyAnalysis.find(a => a.criterion === criterion);
+    if (existingAnalysis?.result) {
+      try {
+        if (selectedFile) {
+          await sessionService.deleteCompetencyAnalysis(selectedFile.id, criterion, 'audio');
+        } else if (selectedAITrainerSession) {
+          await sessionService.deleteCompetencyAnalysis(selectedAITrainerSession.id, criterion, 'ai-session');
+        }
+      } catch (error) {
+        console.error('Ошибка удаления предыдущего анализа:', error);
+      }
+    }
+
+    // Добавляем или обновляем состояние анализа
+    setCompetencyAnalysis(prev => {
+      const existing = prev.find(a => a.criterion === criterion);
+      if (existing) {
+        return prev.map(a =>
+          a.criterion === criterion
+            ? { ...a, loading: true, result: undefined, error: undefined }
+            : a
+        );
+      } else {
+        return [...prev, { criterion, loading: true }];
+      }
+    });
+
+    try {
+      // Определяем текст для анализа
+      let textToAnalyze = '';
+      let fileId = 0;
+      
+      if (hasTranscription) {
+        textToAnalyze = transcription;
+        fileId = selectedFile.id;
+      } else if (hasAISession) {
+        // Преобразуем диалог ИИ-сессии в текст для анализа
+        textToAnalyze = selectedAITrainerSession.sessionData.conversationData
+          .map((message: any) => `${message.sender === 'mentor' ? 'Ментор' : 'Менти'}: ${message.content}`)
+          .join('\n');
+        fileId = selectedAITrainerSession.id; // Используем ID сессии как fileId
+      }
+      
+      const prompt = getCompetencyPrompt(criterion, textToAnalyze);
+      const sourceType = hasAISession ? 'ai-session' : 'audio';
+      const result = await sessionService.analyzeCompetency(prompt, fileId, criterion, sourceType);
+
+      // Обновляем результат
+      setCompetencyAnalysis(prev =>
+        prev.map(a =>
+          a.criterion === criterion
+            ? { ...a, loading: false, result }
+            : a
+        )
+      );
+
+      // Открываем аккордеон после завершения анализа
+      setCompetencyAccordionOpen(criterion);
+
+      // Перебрасываем в таб "Проанализированные" и внутри в таб "Оценка по критериям"
+      setActiveTab('analyzed');
+      setNestedTabValue('competency');
+
+      Alert.alert('Успех', 'Анализ компетенции завершен');
+    } catch (error: any) {
+      console.error('Ошибка анализа компетенции:', error);
+
+      // Обновляем состояние с ошибкой
+      setCompetencyAnalysis(prev =>
+        prev.map(a =>
+          a.criterion === criterion
+            ? { ...a, loading: false, error: error?.message || 'Ошибка анализа' }
+            : a
+        )
+      );
+
+      Alert.alert('Ошибка', 'Ошибка анализа компетенции');
+    }
   };
 
   const getStatusColor = (status: string) => {
@@ -537,6 +967,16 @@ export const AnalysisScreen = () => {
         return 'Поддерживать эффективный фокус';
       case 'check_understanding':
         return 'Проверять понимание';
+      case 'listen_actively':
+        return 'Слушать активно';
+      case 'ask_powerful_questions':
+        return 'Задавать мощные вопросы';
+      case 'create_trust_intimacy':
+        return 'Создавать и поддерживать доверие и близость';
+      case 'plan_goals':
+        return 'Планировать и ставить цели';
+      case 'manage_progress':
+        return 'Управлять прогрессом и ответственностью';
       default:
         return criterion;
     }
@@ -545,17 +985,23 @@ export const AnalysisScreen = () => {
   const renderCompetencyTab = () => {
     console.log('🔍 AnalysisScreen: Rendering competency tab, competencyAnalysis length:', competencyAnalysis.length);
     console.log('🔍 AnalysisScreen: Selected file:', selectedFile?.id, selectedFile?.originalName);
+    console.log('🔍 AnalysisScreen: Selected AI session:', selectedAITrainerSession?.id);
     console.log('🔍 AnalysisScreen: Is file analyzed:', selectedFile ? isFileAnalyzed(selectedFile) : false);
     
-    if (!selectedFile) {
+    // Проверяем, выбрана ли ИИ-сессия или файл
+    const hasFile = !!selectedFile;
+    const hasAISession = !!selectedAITrainerSession;
+    
+    if (!hasFile && !hasAISession) {
       return (
         <View style={styles.emptyState}>
-          <Text style={styles.emptyStateText}>Выберите файл для просмотра анализа компетенций</Text>
+          <Text style={styles.emptyStateText}>Выберите файл или ИИ-сессию для просмотра анализа компетенций</Text>
         </View>
       );
     }
 
-    if (!isFileAnalyzed(selectedFile)) {
+    // Для файлов проверяем, проанализирован ли он
+    if (hasFile && !isFileAnalyzed(selectedFile)) {
       return (
         <View style={styles.emptyState}>
           <Text style={styles.emptyStateText}>Файл не проанализирован</Text>
@@ -563,23 +1009,27 @@ export const AnalysisScreen = () => {
       );
     }
 
-    if (competencyAnalysis.length === 0) {
+    // Для ИИ-сессий проверяем, есть ли данные анализа
+    if (hasAISession && !selectedAITrainerSession.analysisData) {
       return (
         <View style={styles.emptyState}>
-          <Text style={styles.emptyStateText}>Результаты анализа компетенций недоступны</Text>
+          <Text style={styles.emptyStateText}>ИИ-сессия не проанализирована</Text>
         </View>
       );
     }
 
+    // Если результатов нет, показываем сообщение (как в mentor-react)
+    if (competencyAnalysis.length === 0) {
+      return (
+        <View style={styles.emptyState}>
+          <Text style={styles.emptyStateText}>Нажмите "Анализировать" для начала анализа компетенций</Text>
+        </View>
+      );
+    }
+
+    // Отображаем результаты анализа компетенций (как в mentor-react)
     return (
       <View style={styles.competencyContainer}>
-        <View style={styles.competencyHeader}>
-          <Text style={styles.competencyTitle}>Результаты анализа компетенций</Text>
-          <Text style={styles.competencySubtitle}>
-            Детальный анализ проявления компетенций в сессии
-          </Text>
-        </View>
-        
         <View style={styles.competencyResultsList}>
           {competencyAnalysis.map((result, index) => (
             <View key={index} style={styles.competencyResultCard}>
@@ -622,14 +1072,24 @@ export const AnalysisScreen = () => {
                       <ActivityIndicator size="small" color={colors.primary} />
                       <Text style={styles.competencyLoadingText}>Анализируем...</Text>
                     </View>
+                  ) : result.error ? (
+                    <View style={styles.competencyError}>
+                      <Text style={styles.competencyErrorText}>Ошибка анализа: {result.error}</Text>
+                    </View>
                   ) : result.result ? (
                     <View style={styles.competencyResultDetails}>
-                      {/* Маркеры компетенции */}
+                      {/* Общая оценка (как в mentor-react) */}
+                      <View style={styles.competencyOverallResult}>
+                        <Text style={styles.competencyOverallTitle}>Общая оценка</Text>
+                        <Text style={styles.competencyOverallDefinition}>{result.result.definition}</Text>
+                      </View>
+                      
+                      {/* Маркеры компетенции (как в mentor-react) */}
                       <View style={styles.competencyMarkersSection}>
-                        <Text style={styles.competencyMarkersTitle}>Маркеры компетенции:</Text>
+                        <Text style={styles.competencyMarkersTitle}>Маркеры компетенции</Text>
                         <View style={styles.competencyMarkersList}>
-                          {result.result.markers.map((marker) => (
-                            <View key={marker.id} style={styles.competencyMarkerItem}>
+                          {result.result.markers?.map((marker: any, markerIndex: number) => (
+                            <View key={markerIndex} style={styles.competencyMarkerItem}>
                               <View style={styles.competencyMarkerHeader}>
                                 <Text style={styles.competencyMarkerName}>{marker.name}</Text>
                                 <View style={[
@@ -655,36 +1115,8 @@ export const AnalysisScreen = () => {
                           ))}
                         </View>
                       </View>
-                      
-                      {/* Общий результат компетенции */}
-                      <View style={styles.competencyOverallResult}>
-                        <View style={styles.competencyOverallHeader}>
-                          <Text style={styles.competencyOverallTitle}>Общий результат:</Text>
-                          <View style={[
-                            styles.competencyOverallBadge,
-                            { backgroundColor: result.result.overall_competence_observed ? colors.success : colors.gray[300] }
-                          ]}>
-                            <Text style={[
-                              styles.competencyOverallBadgeText,
-                              { color: result.result.overall_competence_observed ? colors.white : colors.gray[600] }
-                            ]}>
-                              {result.result.overall_competence_observed ? '✅ Компетенция проявлена' : '❌ Компетенция не проявлена'}
-                            </Text>
-                          </View>
-                        </View>
-                        <Text style={styles.competencyOverallStats}>
-                          Проявлено маркеров: {result.result.markers.filter(m => m.observed).length}/{result.result.markers.length}
-                        </Text>
-                        {result.result.definition && (
-                          <Text style={styles.competencyOverallDefinition}>
-                            {result.result.definition}
-                          </Text>
-                        )}
-                      </View>
                     </View>
-                  ) : (
-                    <Text style={styles.competencyError}>Ошибка анализа</Text>
-                  )}
+                  ) : null}
                 </View>
               )}
             </View>
@@ -714,6 +1146,150 @@ export const AnalysisScreen = () => {
         <View style={styles.transcriptionContent}>
           <Text style={styles.transcriptionText}>{transcription}</Text>
         </View>
+      </View>
+    );
+  };
+
+  // Рендер таба "Анализировать по критериям" (как в mentor-react)
+  const renderCriteriaAnalysisTab = () => {
+    const hasTranscription = transcription && selectedFile;
+    const hasAISession = selectedAITrainerSession?.sessionData?.conversationData;
+    
+    if (!selectedFile && !selectedAITrainerSession) {
+      return (
+        <View style={styles.emptyState}>
+          <Text style={styles.emptyStateText}>Выберите файл или ИИ-сессию для анализа по критериям</Text>
+        </View>
+      );
+    }
+
+    // Критерии для аудио-файлов
+    const audioCriteria = [
+      {
+        criterion: 'balance_challenge_support',
+        title: 'Создавать баланс между вызовом и поддержкой',
+        description: 'Анализ 8 маркеров компетенции: поддержка, вызов, адаптация и баланс',
+        disabled: !hasTranscription,
+      },
+      {
+        criterion: 'make_observations',
+        title: 'Делать наблюдения',
+        description: 'Анализ 9 маркеров компетенции: наблюдение за прогрессом, реакциями и поведением менти',
+        disabled: !hasTranscription,
+      },
+      {
+        criterion: 'listen',
+        title: 'Слушать',
+        description: 'Анализ 8 маркеров компетенции: активное слушание, понимание потребностей и эмоций менти',
+        disabled: !hasTranscription,
+      },
+      {
+        criterion: 'check_understanding',
+        title: 'Проверять понимание',
+        description: 'Анализ 10 маркеров компетенции: проверка понимания, уточнение и обратная связь',
+        disabled: !hasTranscription,
+      },
+      {
+        criterion: 'share_experience',
+        title: 'Передавать свой опыт',
+        description: 'Анализ 10 маркеров компетенции: передача опыта, адаптация под менти и партнёрская позиция',
+        disabled: !hasTranscription,
+      },
+      {
+        criterion: 'maintain_effective_focus',
+        title: 'Поддерживать эффективный фокус',
+        description: 'Анализ 8 маркеров компетенции: удержание внимания на приоритетах, использование договорённостей и целей',
+        disabled: !hasTranscription,
+      },
+    ];
+
+    // Критерии для ИИ-сессий
+    const aiSessionCriteria = [
+      {
+        criterion: 'balance_challenge_support',
+        title: 'Создавать баланс между вызовом и поддержкой',
+        description: 'Анализ 8 маркеров компетенции: поддержка, вызов, адаптация и баланс',
+        disabled: !hasAISession,
+      },
+      {
+        criterion: 'make_observations',
+        title: 'Делать наблюдения',
+        description: 'Анализ 9 маркеров компетенции: наблюдение за прогрессом, реакциями и поведением менти',
+        disabled: !hasAISession,
+      },
+      {
+        criterion: 'listen_actively',
+        title: 'Слушать активно',
+        description: 'Анализ 6 маркеров компетенции: эмпатия, понимание, рефлексия и обратная связь',
+        disabled: !hasAISession,
+      },
+      {
+        criterion: 'ask_powerful_questions',
+        title: 'Задавать мощные вопросы',
+        description: 'Анализ 7 маркеров компетенции: открытые вопросы, исследование и стимулирование мышления',
+        disabled: !hasAISession,
+      },
+      {
+        criterion: 'create_trust_intimacy',
+        title: 'Создавать и поддерживать доверие и близость',
+        description: 'Анализ 6 маркеров компетенции: доверие, близость, безопасность и конфиденциальность',
+        disabled: !hasAISession,
+      },
+      {
+        criterion: 'plan_goals',
+        title: 'Планировать и ставить цели',
+        description: 'Анализ 8 маркеров компетенции: планирование, постановка целей, структура и прогресс',
+        disabled: !hasAISession,
+      },
+      {
+        criterion: 'manage_progress',
+        title: 'Управлять прогрессом и ответственностью',
+        description: 'Анализ 7 маркеров компетенции: отслеживание прогресса, подотчетность и результаты',
+        disabled: !hasAISession,
+      },
+    ];
+
+    const criteria = hasAISession ? aiSessionCriteria : audioCriteria;
+
+    return (
+      <View style={styles.analysisContainer}>
+        <ScrollView style={styles.tabContent} showsVerticalScrollIndicator={false}>
+          <View style={styles.criteriaAnalysisContainer}>
+            {criteria.map((item, index) => {
+              const analysis = competencyAnalysis.find(a => a.criterion === item.criterion);
+              const isLoading = analysis?.loading || false;
+              const hasResult = !!analysis?.result;
+              
+              return (
+                <View key={index} style={styles.criteriaAnalysisItem}>
+                  <View style={styles.criteriaAnalysisItemContent}>
+                    <Text style={styles.criteriaAnalysisItemTitle}>{item.title}</Text>
+                    <Text style={styles.criteriaAnalysisItemDescription}>{item.description}</Text>
+                  </View>
+                  <TouchableOpacity
+                    style={[
+                      styles.criteriaAnalysisButton,
+                      (item.disabled || isLoading) && styles.criteriaAnalysisButtonDisabled,
+                    ]}
+                    onPress={() => analyzeCompetency(item.criterion)}
+                    disabled={item.disabled || isLoading}
+                  >
+                    {isLoading ? (
+                      <>
+                        <ActivityIndicator size="small" color={colors.white} style={{ marginRight: 8 }} />
+                        <Text style={styles.criteriaAnalysisButtonText}>Анализируем...</Text>
+                      </>
+                    ) : hasResult ? (
+                      <Text style={styles.criteriaAnalysisButtonText}>Повторный анализ</Text>
+                    ) : (
+                      <Text style={styles.criteriaAnalysisButtonText}>Анализировать</Text>
+                    )}
+                  </TouchableOpacity>
+                </View>
+              );
+            })}
+          </View>
+        </ScrollView>
       </View>
     );
   };
@@ -795,7 +1371,161 @@ export const AnalysisScreen = () => {
     );
   };
 
+  const renderAITrainerSessionCard = (session: any) => (
+    <TouchableOpacity
+      key={session.id}
+      style={[
+        styles.fileCard,
+        selectedAITrainerSession?.id === session.id && styles.selectedFileCard
+      ]}
+      onPress={() => selectAITrainerSession(session)}
+    >
+      <View style={styles.fileHeader}>
+        <Text style={styles.fileName} numberOfLines={2}>
+          {session.title || 'ИИ-тренажер сессии'}
+        </Text>
+        <View style={[styles.statusBadge, { backgroundColor: getStatusColor(session.status || 'pending') }]}>
+          <Text style={styles.statusText}>
+            {getStatusText(session.status || 'pending')}
+          </Text>
+        </View>
+      </View>
+      
+      <View style={styles.fileMeta}>
+        <Text style={styles.fileDate}>
+          {new Date(session.createdAt || session.date).toLocaleDateString('ru-RU')}
+        </Text>
+        <Text style={styles.fileDuration}>
+          {session.sessionData?.duration || session.duration || 0} мин
+        </Text>
+        {session.analysisData && (() => {
+          try {
+            const analysis = typeof session.analysisData === 'string' 
+              ? JSON.parse(session.analysisData) 
+              : session.analysisData;
+            if (analysis.overallScore) {
+              return (
+                <Text style={[styles.fileScore, { color: getScoreColor(analysis.overallScore) }]}>
+                  {analysis.overallScore}/10
+                </Text>
+              );
+            }
+          } catch (e) {}
+          return null;
+        })()}
+      </View>
+
+      {session.status === 'processing' ? (
+        <View style={styles.processingContainer}>
+          <ActivityIndicator size="small" color={colors.primary} />
+          <Text style={styles.processingText}>
+            {aiTrainerAnalysisProgress.stage || 'Обработка...'}
+          </Text>
+        </View>
+      ) : session.status === 'pending' ? (
+        <TouchableOpacity
+          style={styles.startAnalysisButton}
+          onPress={() => {
+            setSelectedAITrainerSession(session);
+            setSelectedFile(null); // Сбрасываем выбранный файл
+            startAITrainerAnalysis();
+          }}
+        >
+          <Text style={styles.startAnalysisText}>Анализировать сессию</Text>
+        </TouchableOpacity>
+      ) : null}
+    </TouchableOpacity>
+  );
+
   const renderAnalysisContent = () => {
+    // Если выбрана ИИ-сессия, показываем её анализ
+    if (selectedAITrainerSession) {
+      if (isLoadingAnalysis) {
+        return (
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator size="large" color={colors.primary} />
+            <Text style={styles.loadingText}>Загрузка анализа...</Text>
+          </View>
+        );
+      }
+
+      if (!analysisData && selectedAITrainerSession.status === 'pending') {
+        return (
+          <View style={styles.emptyState}>
+            <Text style={styles.emptyStateText}>Сессия не проанализирована</Text>
+            <TouchableOpacity
+              style={styles.startAnalysisButton}
+              onPress={startAITrainerAnalysis}
+            >
+              <Text style={styles.startAnalysisText}>Запустить анализ</Text>
+            </TouchableOpacity>
+          </View>
+        );
+      }
+
+      if (!analysisData) {
+        return (
+          <View style={styles.emptyState}>
+            <Text style={styles.emptyStateText}>Анализ недоступен</Text>
+          </View>
+        );
+      }
+
+      // Если выбран таб "Анализировать по критериям", показываем список критериев с кнопками анализа
+      if (activeTab === 'analyzed-structure') {
+        return renderCriteriaAnalysisTab();
+      }
+
+      // Для таба "Проанализированные" показываем все табы
+      return (
+        <View style={styles.analysisContainer}>
+          {/* Табы */}
+          <View style={styles.nestedTabContainer}>
+            <TouchableOpacity
+              style={[styles.nestedTab, nestedTabValue === 'criteria' && styles.activeNestedTab]}
+              onPress={() => setNestedTabValue('criteria')}
+            >
+              <Text style={[styles.nestedTabText, nestedTabValue === 'criteria' && styles.activeNestedTabText]}>
+                Оценка по структуре
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.nestedTab, nestedTabValue === 'competency' && styles.activeNestedTab]}
+              onPress={() => setNestedTabValue('competency')}
+            >
+              <Text style={[styles.nestedTabText, nestedTabValue === 'competency' && styles.activeNestedTabText]}>
+                Оценка по критериям
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.nestedTab, nestedTabValue === 'transcription' && styles.activeNestedTab]}
+              onPress={() => setNestedTabValue('transcription')}
+            >
+              <Text style={[styles.nestedTabText, nestedTabValue === 'transcription' && styles.activeNestedTabText]}>
+                Транскрипция
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.nestedTab, nestedTabValue === 'recommendations' && styles.activeNestedTab]}
+              onPress={() => setNestedTabValue('recommendations')}
+            >
+              <Text style={[styles.nestedTabText, nestedTabValue === 'recommendations' && styles.activeNestedTabText]}>
+                Рекомендации
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Содержимое табов */}
+          <ScrollView style={styles.tabContent} showsVerticalScrollIndicator={false}>
+            {nestedTabValue === 'criteria' && renderCriteriaTab()}
+            {nestedTabValue === 'competency' && renderCompetencyTab()}
+            {nestedTabValue === 'transcription' && renderTranscriptionTab()}
+            {nestedTabValue === 'recommendations' && renderRecommendationsTab()}
+          </ScrollView>
+        </View>
+      );
+    }
+
     if (!selectedFile) {
       return (
         <View style={styles.emptyState}>
@@ -821,15 +1551,9 @@ export const AnalysisScreen = () => {
       );
     }
 
-    // Если выбран таб "Анализировать по критериям", показываем только таб компетенций
+    // Если выбран таб "Анализировать по критериям", показываем список критериев с кнопками анализа
     if (activeTab === 'analyzed-structure') {
-      return (
-        <View style={styles.analysisContainer}>
-          <ScrollView style={styles.tabContent} showsVerticalScrollIndicator={false}>
-            {renderCompetencyTab()}
-          </ScrollView>
-        </View>
-      );
+      return renderCriteriaAnalysisTab();
     }
 
     // Для таба "Проанализированные" показываем все табы
@@ -919,7 +1643,7 @@ export const AnalysisScreen = () => {
           onPress={() => setActiveTab('analyzed-structure')}
         >
           <Text style={[styles.tabText, activeTab === 'analyzed-structure' && styles.activeTabText]}>
-            Анализировать по критериям ({analyzedFiles.length})
+            Анализировать по критериям ({analyzedFiles.length + aiTrainerSessions.length})
           </Text>
         </TouchableOpacity>
         <TouchableOpacity
@@ -949,21 +1673,25 @@ export const AnalysisScreen = () => {
               </View>
             )
           ) : activeTab === 'analyzed-structure' ? (
-            analyzedFiles.length > 0 ? (
-              analyzedFiles.map(file => renderFileCard(file, isFileAnalyzed(file)))
-            ) : (
-              <View style={styles.emptyState}>
-                <Text style={styles.emptyStateText}>Нет проанализированных файлов</Text>
-              </View>
-            )
+            <>
+              {analyzedFiles.length > 0 && analyzedFiles.map(file => renderFileCard(file, isFileAnalyzed(file)))}
+              {aiTrainerSessions.length > 0 && aiTrainerSessions.map(session => renderAITrainerSessionCard(session))}
+              {analyzedFiles.length === 0 && aiTrainerSessions.length === 0 && (
+                <View style={styles.emptyState}>
+                  <Text style={styles.emptyStateText}>Нет проанализированных файлов</Text>
+                </View>
+              )}
+            </>
           ) : (
-            analyzedFiles.length > 0 ? (
-              analyzedFiles.map(file => renderFileCard(file, isFileAnalyzed(file)))
-            ) : (
-              <View style={styles.emptyState}>
-                <Text style={styles.emptyStateText}>Нет проанализированных файлов</Text>
-              </View>
-            )
+            <>
+              {analyzedFiles.length > 0 && analyzedFiles.map(file => renderFileCard(file, isFileAnalyzed(file)))}
+              {aiTrainerSessions.length > 0 && aiTrainerSessions.map(session => renderAITrainerSessionCard(session))}
+              {analyzedFiles.length === 0 && aiTrainerSessions.length === 0 && (
+                <View style={styles.emptyState}>
+                  <Text style={styles.emptyStateText}>Нет проанализированных файлов</Text>
+                </View>
+              )}
+            </>
           )}
         </View>
 
@@ -1512,6 +2240,60 @@ const styles = StyleSheet.create({
     fontSize: typography.fontSizes.sm,
     color: colors.primary,
   },
+  criteriaAnalysisContainer: {
+    padding: spacing.md,
+    gap: spacing.md,
+  },
+  criteriaAnalysisItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: spacing.md,
+    backgroundColor: colors.gray[50],
+    borderRadius: 8,
+    marginBottom: spacing.sm,
+  },
+  criteriaAnalysisItemContent: {
+    flex: 1,
+    marginRight: spacing.md,
+  },
+  criteriaAnalysisItemTitle: {
+    fontSize: typography.fontSizes.md,
+    fontWeight: typography.fontWeights.semibold,
+    color: colors.text,
+    marginBottom: spacing.xs,
+  },
+  criteriaAnalysisItemDescription: {
+    fontSize: typography.fontSizes.sm,
+    color: colors.gray[600],
+  },
+  criteriaAnalysisButton: {
+    backgroundColor: colors.primary,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderRadius: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  criteriaAnalysisButtonDisabled: {
+    backgroundColor: colors.gray[300],
+    opacity: 0.6,
+  },
+  criteriaAnalysisButtonText: {
+    color: colors.white,
+    fontSize: typography.fontSizes.sm,
+    fontWeight: typography.fontWeights.medium,
+  },
+  criteriaAnalysisResults: {
+    marginTop: spacing.lg,
+    padding: spacing.md,
+  },
+  criteriaAnalysisResultsTitle: {
+    fontSize: typography.fontSizes.lg,
+    fontWeight: typography.fontWeights.semibold,
+    color: colors.text,
+    marginBottom: spacing.md,
+  },
   competencyResultDetails: {
     gap: spacing.lg,
   },
@@ -1592,14 +2374,18 @@ const styles = StyleSheet.create({
     fontSize: typography.fontSizes.sm,
     color: colors.gray[600],
   },
+  competencyError: {
+    padding: spacing.md,
+    backgroundColor: colors.error + '20',
+    borderRadius: 8,
+  },
+  competencyErrorText: {
+    fontSize: typography.fontSizes.sm,
+    color: colors.error,
+  },
   competencyOverallDefinition: {
     fontSize: typography.fontSizes.sm,
     color: colors.gray[600],
     lineHeight: 18,
-  },
-  competencyError: {
-    fontSize: typography.fontSizes.sm,
-    color: colors.error,
-    textAlign: 'center',
   },
 });

@@ -14,6 +14,8 @@ import {
   SafeAreaView,
   Dimensions,
 } from 'react-native';
+import { useNavigation, CommonActions } from '@react-navigation/native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { colors, spacing, typography } from '../styles';
 import { assignmentService } from '../services/api/assignmentService';
 import { CourseAssignment } from '../types/assignments';
@@ -42,6 +44,7 @@ export const AISessionTrainerModal: React.FC<AISessionTrainerModalProps> = ({
   courseId,
   onSubmissionSuccess,
 }) => {
+  const navigation = useNavigation();
   const [expertise, setExpertise] = useState('');
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputMessage, setInputMessage] = useState('');
@@ -51,6 +54,7 @@ export const AISessionTrainerModal: React.FC<AISessionTrainerModalProps> = ({
   const [currentStage, setCurrentStage] = useState(0);
   const [mentorNotes, setMentorNotes] = useState('');
   const [sessionSummary, setSessionSummary] = useState('');
+  const [sessionCompleted, setSessionCompleted] = useState(false);
   
   const messagesEndRef = useRef<ScrollView>(null);
 
@@ -78,6 +82,7 @@ export const AISessionTrainerModal: React.FC<AISessionTrainerModalProps> = ({
     setCurrentStage(0);
     setMentorNotes('');
     setSessionSummary('');
+    setSessionCompleted(false);
   };
 
   const generateCase = async () => {
@@ -216,23 +221,98 @@ export const AISessionTrainerModal: React.FC<AISessionTrainerModalProps> = ({
         sessionSummary,
         mentorNotes,
         expertise,
-        completedStages: currentStage + 1,
-        totalStages: 3 // Стандартные этапы: CLARIFY_GOAL, SOLUTION_SEARCH, WRAP_UP
+        sessionType: 'ai_trainer'
       };
 
       console.log('📤 Submitting AI Session Trainer:', submissionData);
 
       // Отправляем результаты сессии
-      await assignmentService.submitAISessionTrainerAssignment(courseId, assignment.id, submissionData);
+      const submitResult = await assignmentService.submitAISessionTrainerAssignment(courseId, assignment.id, submissionData);
+
+      // Сохраняем данные сессии для анализа
+      // Используем ID из результата, если он есть, иначе используем временный ID
+      const sessionId = submitResult?.sessionId || submitResult?.id || submitResult?.session?.id || `ai-trainer-${Date.now()}`;
       
-      Alert.alert('Успех', 'Сессия завершена! Результаты отправлены на проверку администратору');
+      const sessionForAnalysis = {
+        id: sessionId,
+        title: `ИИ-тренажер: ${assignment.title}`,
+        date: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+        duration: Math.round((Date.now() - new Date(messages[0]?.timestamp).getTime()) / 60000) || 30,
+        sessionData: {
+          conversationData: messages,
+          sessionSummary,
+          mentorNotes,
+          expertise,
+          duration: Math.round((Date.now() - new Date(messages[0]?.timestamp).getTime()) / 60000) || 30,
+          date: new Date().toISOString(),
+          assignmentId: assignment.id,
+          courseId: courseId
+        },
+        conversationData: messages,
+        sessionSummary,
+        mentorNotes,
+        expertise,
+        sessionType: 'ai_trainer',
+        courseId,
+        assignmentId: assignment.id,
+        status: 'pending' // Статус pending, чтобы показать блок с кнопкой "Анализировать сессию"
+      };
       
+      // Сохраняем в AsyncStorage для передачи на страницу анализа
+      await AsyncStorage.setItem('ai-trainer-session', JSON.stringify(sessionForAnalysis));
+      
+      // Сохраняем информацию для поиска сессии по assignmentId и courseId (как в mentor-react)
+      const sessionSearchInfo = {
+        assignmentId: assignment.id,
+        courseId: courseId,
+        assignmentTitle: assignment.title
+      };
+      await AsyncStorage.setItem('ai-trainer-session-search', JSON.stringify(sessionSearchInfo));
+      
+      setSessionCompleted(true);
+
       // Вызываем callback для обновления статуса
       if (onSubmissionSuccess) {
         onSubmissionSuccess();
       }
       
+      // Закрываем модальное окно
       onClose();
+      
+      // Показываем сообщение и пытаемся перейти на экран анализа
+      Alert.alert(
+        'Сессия завершена',
+        'Результаты сохранены. Теперь вы можете провести анализ сессии.',
+        [
+          {
+            text: 'Перейти к анализу',
+            onPress: () => {
+              // Пытаемся найти Tab Navigator и перейти на экран Analysis
+              try {
+                const rootNavigation = navigation.getParent() || navigation;
+                if (rootNavigation) {
+                  rootNavigation.dispatch(
+                    CommonActions.navigate({
+                      name: 'MainTabs',
+                      params: {
+                        screen: 'Analysis',
+                      },
+                    })
+                  );
+                }
+              } catch (error) {
+                console.log('Navigation error:', error);
+                // Если навигация не удалась, просто показываем сообщение
+              }
+            }
+          },
+          {
+            text: 'ОК',
+            style: 'cancel'
+          }
+        ]
+      );
     } catch (error) {
       console.error('Error submitting session:', error);
       Alert.alert('Ошибка', 'Не удалось отправить результаты сессии. Попробуйте еще раз.');

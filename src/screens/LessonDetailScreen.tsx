@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -30,6 +30,9 @@ export const LessonDetailScreen = () => {
   const { lessonId } = route.params as RouteParams;
   const { user } = useAppSelector((state) => state.user);
   
+  const scrollViewRef = useRef<ScrollView>(null);
+  const lastScrollTimeRef = useRef<number>(0);
+  
   const [refreshing, setRefreshing] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [lesson, setLesson] = useState<Lesson | null>(null);
@@ -38,6 +41,8 @@ export const LessonDetailScreen = () => {
   const [lessonTests, setLessonTests] = useState<any[]>([]);
   const [lessonAssignments, setLessonAssignments] = useState<any[]>([]);
   const [relatedLoading, setRelatedLoading] = useState(false);
+  const [lessonNavigation, setLessonNavigation] = useState<any>(null);
+  const [scrollProgress, setScrollProgress] = useState<number>(0);
 
   const loadLesson = async () => {
     try {
@@ -70,6 +75,14 @@ export const LessonDetailScreen = () => {
 
       // Загружаем связанные тесты и задания
       await loadRelatedTestsAndAssignments(lessonData);
+      
+      // Загружаем навигацию по урокам
+      try {
+        const navigationData = await lessonService.getLessonNavigation(lessonId);
+        setLessonNavigation(navigationData);
+      } catch (error) {
+        console.error('Error loading lesson navigation:', error);
+      }
     } catch (error) {
       console.error('Error loading lesson:', error);
       Alert.alert('Ошибка', 'Не удалось загрузить урок');
@@ -159,6 +172,16 @@ export const LessonDetailScreen = () => {
         progress: progress,
         status: progress >= 100 ? 'completed' : progress > 0 ? 'in_progress' : 'not_started'
       }));
+      
+      // При достижении 100% обновляем навигацию
+      if (progress >= 100) {
+        try {
+          const navigationData = await lessonService.getLessonNavigation(lessonId);
+          setLessonNavigation(navigationData);
+        } catch (error) {
+          console.error('Error updating lesson navigation:', error);
+        }
+      }
     } catch (error) {
       console.error('Error updating lesson progress:', error);
     } finally {
@@ -166,8 +189,60 @@ export const LessonDetailScreen = () => {
     }
   };
 
+  // Функция для отслеживания прокрутки
+  const handleScroll = (event: any) => {
+    if (!lessonId) return;
+    
+    // Игнорируем события скроллинга, которые происходят слишком быстро после перехода к уроку
+    const now = Date.now();
+    if (now - lastScrollTimeRef.current < 2000) {
+      return;
+    }
+    lastScrollTimeRef.current = now;
+    
+    const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+    const scrollTop = contentOffset.y;
+    const scrollHeight = contentSize.height;
+    const clientHeight = layoutMeasurement.height;
+    
+    // Рассчитываем процент прокрутки
+    const maxScroll = scrollHeight - clientHeight;
+    if (maxScroll <= 0) return;
+    
+    const scrollPercentage = Math.min(100, Math.max(0, Math.round((scrollTop / maxScroll) * 100)));
+    
+    // Получаем текущий прогресс
+    const currentProgress = lessonProgress?.progress || 0;
+    
+    // Обновляем прогресс скролла только если он изменился
+    if (scrollPercentage !== scrollProgress) {
+      setScrollProgress(scrollPercentage);
+    }
+    
+    // Сохраняем прогресс урока только если он увеличился (не отматываем назад)
+    if (scrollPercentage > currentProgress) {
+      // Обновляем локальное состояние сразу
+      setLessonProgress(prev => ({
+        ...prev,
+        progress: scrollPercentage,
+        status: scrollPercentage >= 100 ? 'completed' : scrollPercentage > 0 ? 'in_progress' : 'not_started'
+      }));
+      
+      // Автоматически сохраняем прогресс при достижении 100%
+      if (scrollPercentage >= 100) {
+        updateLessonProgress(100);
+      } else if (scrollPercentage % 10 === 0) {
+        // Сохраняем прогресс каждые 10% чтобы не спамить API
+        updateLessonProgress(scrollPercentage);
+      }
+    }
+  };
+
   useEffect(() => {
     loadLesson();
+    // Сбрасываем время последнего скролла при смене урока
+    lastScrollTimeRef.current = Date.now();
+    setScrollProgress(0);
   }, [lessonId]);
 
   const getStatusColor = (status: string) => {
@@ -243,17 +318,65 @@ export const LessonDetailScreen = () => {
       <StatusBar barStyle="dark-content" backgroundColor={colors.white} />
       
       <View style={styles.header}>
-        <TouchableOpacity
-          style={styles.backButton}
-          onPress={() => navigation.goBack()}
-        >
-          <Text style={styles.backButtonText}>← Назад</Text>
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>Урок</Text>
+        <View style={styles.headerButtonsRow}>
+          <TouchableOpacity
+            style={styles.backButtonCompact}
+            onPress={() => navigation.goBack()}
+          >
+            <Text style={styles.headerButtonText}>← Назад</Text>
+          </TouchableOpacity>
+          {lessonNavigation?.previousLesson ? (
+            <TouchableOpacity
+              style={styles.prevButtonFull}
+              onPress={() => {
+                navigation.navigate('LessonDetail' as never, { lessonId: lessonNavigation.previousLesson.id } as never);
+              }}
+            >
+              <Text style={styles.headerButtonText}>
+                ← {lessonNavigation.previousLesson.title.length > 20 
+                  ? lessonNavigation.previousLesson.title.substring(0, 20) + '...' 
+                  : lessonNavigation.previousLesson.title}
+              </Text>
+            </TouchableOpacity>
+          ) : (
+            <View style={styles.prevButtonFull} />
+          )}
+        </View>
+        {lessonNavigation?.nextLesson && (
+          <TouchableOpacity
+            style={[
+              styles.nextButtonFull,
+              (scrollProgress >= 100 || lessonNavigation.nextLesson.isUnlocked) && styles.nextButtonActive
+            ]}
+            onPress={() => {
+              if (scrollProgress >= 100 || lessonNavigation.nextLesson.isUnlocked) {
+                navigation.navigate('LessonDetail' as never, { lessonId: lessonNavigation.nextLesson.id } as never);
+              }
+            }}
+            disabled={scrollProgress < 100 && !lessonNavigation.nextLesson.isUnlocked}
+          >
+            <Text style={[
+              styles.nextButtonText,
+              (scrollProgress >= 100 || lessonNavigation.nextLesson.isUnlocked) && styles.nextButtonTextActive
+            ]}>
+              {lessonNavigation.nextLesson.title.length > 30 
+                ? lessonNavigation.nextLesson.title.substring(0, 30) + '...' 
+                : lessonNavigation.nextLesson.title} →
+            </Text>
+          </TouchableOpacity>
+        )}
+        <View style={styles.headerTitleContainer}>
+          <Text style={styles.headerTitle} numberOfLines={2}>
+            {lesson?.title || 'Урок'}
+          </Text>
+        </View>
       </View>
 
       <ScrollView
+        ref={scrollViewRef}
         style={styles.scrollContainer}
+        onScroll={handleScroll}
+        scrollEventThrottle={16}
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
         }
@@ -446,26 +569,73 @@ const styles = StyleSheet.create({
     marginBottom: spacing.lg,
   },
   header: {
-    flexDirection: 'row',
-    alignItems: 'center',
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
     backgroundColor: colors.white,
     borderBottomWidth: 1,
     borderBottomColor: colors.gray[200],
   },
-  backButton: {
-    marginRight: spacing.md,
+  headerButtonsRow: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+    marginBottom: spacing.sm,
+    alignItems: 'center',
   },
-  backButtonText: {
-    fontSize: typography.fontSizes.md,
+  backButtonCompact: {
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderRadius: 8,
+    backgroundColor: colors.gray[100],
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  prevButtonFull: {
+    flex: 1,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderRadius: 8,
+    backgroundColor: colors.gray[100],
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerButtonText: {
+    fontSize: typography.fontSizes.sm,
     color: colors.primary,
     fontWeight: typography.fontWeights.medium,
+    textAlign: 'center',
+  },
+  headerTitleContainer: {
+    paddingVertical: spacing.xs,
+    marginBottom: spacing.sm,
   },
   headerTitle: {
-    fontSize: typography.fontSizes.lg,
+    fontSize: typography.fontSizes.md,
     fontWeight: typography.fontWeights.semibold,
     color: colors.text,
+    textAlign: 'center',
+  },
+  nextButtonFull: {
+    width: '100%',
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderRadius: 8,
+    backgroundColor: colors.gray[200],
+    opacity: 0.5,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  nextButtonActive: {
+    backgroundColor: colors.primary,
+    opacity: 1,
+  },
+  nextButtonText: {
+    fontSize: typography.fontSizes.sm,
+    color: colors.gray[600],
+    fontWeight: typography.fontWeights.medium,
+    textAlign: 'center',
+  },
+  nextButtonTextActive: {
+    color: colors.white,
   },
   lessonHeader: {
     flexDirection: 'row',

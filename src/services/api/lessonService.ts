@@ -132,6 +132,15 @@ class LessonService {
     }
   }
 
+  async getLessonNavigation(lessonId: number): Promise<any> {
+    try {
+      return await apiService.get<any>(`/lesson-progress/lesson/${lessonId}/navigation`);
+    } catch (error: any) {
+      console.log('Lesson navigation not available:', error);
+      return null;
+    }
+  }
+
   // Методы для работы с тестами и заданиями
   async getLessonTests(lessonId: number): Promise<any[]> {
     try {

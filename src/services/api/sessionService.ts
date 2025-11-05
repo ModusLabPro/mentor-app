@@ -52,6 +52,7 @@ class SessionService {
     let fileType = file.type || 'application/octet-stream';
     
     // Исправляем тип файла для лучшей совместимости
+    // Используем правильные MIME-типы для каждого формата
     if (file.name) {
       const extension = file.name.split('.').pop()?.toLowerCase();
       switch (extension) {
@@ -61,9 +62,13 @@ class SessionService {
           fileType = 'video/mp4';
           break;
         case 'mp3':
-        case 'wav':
+          fileType = 'audio/mp3'; // MP3 (сервер ожидает audio/mp3, а не audio/mpeg)
+          break;
         case 'm4a':
-          fileType = 'audio/mpeg';
+          fileType = 'audio/m4a'; // M4A (AAC)
+          break;
+        case 'wav':
+          fileType = 'audio/wav'; // WAV
           break;
         case 'jpg':
         case 'jpeg':
@@ -73,7 +78,8 @@ class SessionService {
           fileType = 'image/png';
           break;
         default:
-          fileType = 'application/octet-stream';
+          // Если не удалось определить, используем тип из file.type или по умолчанию
+          fileType = file.type || 'application/octet-stream';
       }
     }
     
@@ -201,7 +207,7 @@ class SessionService {
 
   // Получение транскрипции
   async getTranscription(fileId: number): Promise<{ transcription: string }> {
-    return apiService.get<{ transcription: string }>(`/analysis/${fileId}/transcription`);
+    return apiService.get<{ transcription: string }>(`/analysis/file/${fileId}/transcription`);
   }
 
   // Запуск анализа
@@ -220,8 +226,8 @@ class SessionService {
   }
 
   // Получение анализа компетенций
-  async getCompetencyAnalysis(fileId: number): Promise<CompetencyAnalysis[]> {
-    return apiService.get<CompetencyAnalysis[]>(`/analysis/${fileId}/competency-analysis`);
+  async getCompetencyAnalysis(fileId: number, sourceType: 'audio' | 'ai-session' = 'audio'): Promise<CompetencyAnalysis[]> {
+    return apiService.get<CompetencyAnalysis[]>(`/analysis/file/${fileId}/competency-analysis?sourceType=${sourceType}`);
   }
 
   // Запуск анализа компетенций
@@ -391,6 +397,93 @@ class SessionService {
     trends: { date: string; score: number; sessions: number }[];
   }> {
     return apiService.get<any>(`/analytics?period=${period}`);
+  }
+
+  // Получение ИИ-сессий тренажера
+  async getAITrainerSessions(): Promise<any[]> {
+    return apiService.get<any[]>('/analysis/ai-sessions');
+  }
+
+  // Запуск анализа (универсальный метод для файлов и ИИ-сессий, как в mentor-react)
+  async startAnalysis(fileId?: number, sessionData?: any): Promise<{ message: string; analysisId: string }> {
+    return apiService.post<{ message: string; analysisId: string }>('/analysis/start', {
+      fileId,
+      sessionData
+    });
+  }
+
+  // Запуск анализа ИИ-сессии
+  async startAITrainerAnalysis(sessionData: any): Promise<{ message: string; analysisId: string }> {
+    return this.startAnalysis(undefined, sessionData);
+  }
+
+  // Получение статуса анализа (универсальный метод для файлов и ИИ-сессий, как в mentor-react)
+  async getAnalysisStatus(analysisId: string): Promise<{
+    status: string;
+    progress: number;
+    stage: string;
+    data?: any;
+  }> {
+    return apiService.get<any>(`/analysis/${analysisId}/status`);
+  }
+
+  // Получение статуса анализа ИИ-сессии (алиас для обратной совместимости)
+  async getAITrainerAnalysisStatus(analysisId: string): Promise<{
+    status: string;
+    progress: number;
+    stage: string;
+    data?: any;
+  }> {
+    return this.getAnalysisStatus(analysisId);
+  }
+
+  // Получение анализа компетенций для ИИ-сессии
+  async getAITrainerCompetencyAnalysis(sessionId: number): Promise<CompetencyAnalysis[]> {
+    return this.getCompetencyAnalysis(sessionId, 'ai-session');
+  }
+
+  // Анализ компетенций (как в mentor-react)
+  async analyzeCompetency(
+    prompt: string,
+    mediaFileId: number,
+    criterion: string,
+    sourceType: 'audio' | 'ai-session' = 'audio'
+  ): Promise<{
+    competence: string;
+    definition: string;
+    markers: Array<{
+      id: number;
+      name: string;
+      observed: boolean;
+      explanation?: string;
+    }>;
+    overall_competence_observed: boolean;
+  }> {
+    return apiService.post<{
+      competence: string;
+      definition: string;
+      markers: Array<{
+        id: number;
+        name: string;
+        observed: boolean;
+        explanation?: string;
+      }>;
+      overall_competence_observed: boolean;
+    }>('/analysis/competency', {
+      prompt,
+      mediaFileId,
+      criterion,
+      sourceType,
+    });
+  }
+
+  // Удаление анализа компетенций (как в mentor-react)
+  async deleteCompetencyAnalysis(
+    fileId: number,
+    criterion: string,
+    sourceType: 'audio' | 'ai-session' = 'audio'
+  ): Promise<void> {
+    return apiService.delete(`/analysis/file/${fileId}/competency-analysis/${criterion}?sourceType=${sourceType}`);
   }
 }
 

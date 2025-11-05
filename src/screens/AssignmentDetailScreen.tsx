@@ -262,15 +262,25 @@ export const AssignmentDetailScreen = () => {
   const handleStartAIReview = async () => {
     if (!assignment) return;
 
+    // Проверяем, что задание имеет тип "question-answer", так как reviewAssignmentWithAI работает только для этого типа
+    if (assignment.type !== CourseAssignmentType.QUESTION_ANSWER) {
+      Alert.alert(
+        'Недоступно',
+        'Анализ ИИ доступен только для заданий типа "Вопрос-ответ"'
+      );
+      return;
+    }
+
     try {
       setIsSubmitting(true);
       await assignmentService.reviewAssignmentWithAI(assignment.id);
       Alert.alert('Успешно', 'Анализ ИИ запущен. Результаты будут доступны через несколько минут.');
       // Перезагружаем задание, чтобы получить результаты
       await loadAssignment();
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error starting AI review:', error);
-      Alert.alert('Ошибка', 'Не удалось запустить анализ ИИ');
+      const errorMessage = error?.response?.data?.message || error?.message || 'Не удалось запустить анализ ИИ';
+      Alert.alert('Ошибка', errorMessage);
     } finally {
       setIsSubmitting(false);
     }
@@ -567,21 +577,28 @@ export const AssignmentDetailScreen = () => {
                 </View>
               )}
               
-              {/* Кнопка для просмотра результатов ИИ */}
-              {aiReviewResults ? (
-                <TouchableOpacity
-                  style={styles.aiReviewButton}
-                  onPress={() => setShowAIReviewModal(true)}
-                >
-                  <Text style={styles.aiReviewButtonText}>Посмотреть анализ ИИ</Text>
-                </TouchableOpacity>
-              ) : (
-                <TouchableOpacity
-                  style={styles.aiReviewButton}
-                  onPress={handleStartAIReview}
-                >
-                  <Text style={styles.aiReviewButtonText}>Запустить анализ ИИ</Text>
-                </TouchableOpacity>
+              {/* Кнопка для просмотра результатов ИИ - показываем только для заданий типа question-answer */}
+              {assignment?.type === CourseAssignmentType.QUESTION_ANSWER && (
+                aiReviewResults ? (
+                  <TouchableOpacity
+                    style={styles.aiReviewButton}
+                    onPress={() => setShowAIReviewModal(true)}
+                  >
+                    <Text style={styles.aiReviewButtonText}>Посмотреть анализ ИИ</Text>
+                  </TouchableOpacity>
+                ) : (
+                  <TouchableOpacity
+                    style={styles.aiReviewButton}
+                    onPress={handleStartAIReview}
+                    disabled={isSubmitting}
+                  >
+                    {isSubmitting ? (
+                      <ActivityIndicator color={colors.white} />
+                    ) : (
+                      <Text style={styles.aiReviewButtonText}>Запустить анализ ИИ</Text>
+                    )}
+                  </TouchableOpacity>
+                )
               )}
             </View>
           </View>
